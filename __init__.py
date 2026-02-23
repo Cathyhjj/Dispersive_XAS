@@ -48,6 +48,7 @@ from . import image_processing
 
 # --- Functional submodules ---
 from . import analysis
+from . import batch
 from . import calibration
 from . import io
 from . import preprocessing
@@ -57,8 +58,10 @@ from . import utils
 from . import visualization
 
 # --- Flat public API (mirrors numpy-style: functions available at top level) ---
-from .analysis import XAS_spec
+from .analysis import XAS_spec, spec_average
+from .batch import norm_spec_preview, plot_spectra_in_chunks
 from .calibration import EDXAS_Calibrate, calibrate_regression
+from .image_processing import find_shifts, register_thresholding, stitch_scans
 from .io import (
     load_bluesky_h5,
     load_nexus_entry,
@@ -101,6 +104,7 @@ __all__ = [
     "h5io",
     "image_processing",
     "analysis",
+    "batch",
     "calibration",
     "io",
     "preprocessing",
@@ -110,9 +114,17 @@ __all__ = [
     "visualization",
     # analysis
     "XAS_spec",
+    "spec_average",
+    # batch
+    "norm_spec_preview",
+    "plot_spectra_in_chunks",
     # calibration
     "EDXAS_Calibrate",
     "calibrate_regression",
+    # image_processing
+    "find_shifts",
+    "register_thresholding",
+    "stitch_scans",
     # io
     "load_bluesky_h5",
     "load_nexus_entry",

@@ -19,8 +19,10 @@ For new code, prefer importing from the package directly::
 """
 
 # Re-export everything from the reorganised submodules
-from .analysis import XAS_spec
+from .analysis import XAS_spec, spec_average
+from .batch import norm_spec_preview, plot_spectra_in_chunks
 from .calibration import EDXAS_Calibrate, calibrate_regression
+from .image_processing import find_shifts, register_thresholding, stitch_scans
 from .io import (
     load_bluesky_h5,
     load_nexus_entry,

@@ -7,7 +7,7 @@ a fluent API for the full analysis workflow:
     peak / edge detection → energy calibration
 """
 
-from typing import Optional, Union
+from typing import Optional, Tuple, Union
 
 import numpy as np
 import scipy.ndimage as nd
@@ -22,7 +22,7 @@ from .spectrum import (
     spectrum_generate,
 )
 
-__all__ = ["XAS_spec"]
+__all__ = ["XAS_spec", "spec_average"]
 
 
 class XAS_spec:
@@ -397,3 +397,78 @@ class XAS_spec:
         for i in range(len(fits)):
             self.cali_spec[i][0] = fits[i].sample_spec(self.norm_spec[i])[:, 1]
         return self.cali_spec
+
+
+def spec_average(
+    xas_object: "XAS_spec",
+    intp_E1: float,
+    intp_E2: float,
+    norm_E1: float,
+    norm_E2: float,
+    intp_pnts: int,
+    show: bool = True,
+    selection: Optional[np.ndarray] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Interpolate, normalise, and optionally average calibrated spectra.
+
+    For each spectrum in *xas_object* the calibrated energy axis is
+    re-interpolated onto ``intp_pnts`` points between *intp_E1* and
+    *intp_E2*, then min–max normalised over ``[norm_E1, norm_E2]``.
+    The resulting array is optionally reduced by averaging a *selection*
+    of frames.
+
+    Parameters
+    ----------
+    xas_object : XAS_spec
+        Object whose :attr:`~XAS_spec.cali_spec` attribute is used.
+    intp_E1, intp_E2 : float
+        Energy range for interpolation (same units as the calibrated axis).
+    norm_E1, norm_E2 : float
+        Energy range used for min–max normalisation.
+    intp_pnts : int
+        Number of interpolation points.
+    show : bool
+        Plot all individual spectra and the averaged result.
+    selection : array-like of int or None
+        Frame indices to average.  If ``None`` all frames are averaged.
+
+    Returns
+    -------
+    spec : ndarray, shape (N, 2, intp_pnts)
+        Individually processed spectra.
+    spec_aver : ndarray, shape (2, intp_pnts)
+        Averaged spectrum.
+    """
+    import matplotlib.pyplot as plt
+
+    spec = np.asarray(
+        [
+            norm_spec(
+                interpt_spec(
+                    xas_object.cali_spec[i], intp_E1, intp_E2, pnts=intp_pnts
+                ),
+                norm_E1,
+                norm_E2,
+                show=show,
+            )
+            for i in range(xas_object.data_range)
+        ]
+    )
+
+    if selection is None:
+        print("Averaging all")
+        spec_aver = np.average(spec, axis=0)
+    else:
+        print(f"Averaging selection: {selection}")
+        spec_aver = np.average(
+            np.asarray(spec)[selection].reshape(-1, 2, intp_pnts), axis=0
+        )
+
+    if show:
+        plt.plot(
+            spec_aver[0], spec_aver[1],
+            color="r", label="averaged", alpha=0.3, linewidth=5,
+        )
+        plt.legend()
+
+    return spec, spec_aver
