@@ -1,14 +1,4 @@
-import datetime
-
 import numpy as np
-
-
-def date_today():
-    return datetime.datetime.today().strftime("%Y%m%d")
-
-
-def time_now():
-    return datetime.datetime.now().strftime("%H%M")
 
 
 class Crystal(object):
