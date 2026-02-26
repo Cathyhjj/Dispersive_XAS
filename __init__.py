@@ -59,7 +59,7 @@ from . import visualization
 
 # --- Flat public API (mirrors numpy-style: functions available at top level) ---
 from .analysis import XAS_spec, spec_average
-from .batch import norm_spec_preview, plot_spectra_in_chunks
+from .batch import norm_spec_preview, plot_spectra_in_chunks, preview_spectra_html
 from .calibration import EDXAS_Calibrate, calibrate_regression
 from .image_processing import find_shifts, register_thresholding, stitch_scans
 from .io import (
@@ -118,6 +118,7 @@ __all__ = [
     # batch
     "norm_spec_preview",
     "plot_spectra_in_chunks",
+    "preview_spectra_html",
     # calibration
     "EDXAS_Calibrate",
     "calibrate_regression",
