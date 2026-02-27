@@ -53,7 +53,7 @@ def color_gradient(c1: str, c2: str, mix: float = 0) -> str:
     Parameters
     ----------
     c1, c2 : str
-        Any matplotlib-recognised colour strings (hex, named, etc.).
+        Colour strings (hex, named, etc.) understood by Pillow.
         ``c1`` is returned at ``mix=0``; ``c2`` at ``mix=1``.
     mix : float
         Interpolation factor in [0, 1].
@@ -63,33 +63,23 @@ def color_gradient(c1: str, c2: str, mix: float = 0) -> str:
     str
         Hex colour string.
     """
-    import matplotlib as mpl
+    from PIL import ImageColor
 
-    rgb1 = np.array(mpl.colors.to_rgb(c1))
-    rgb2 = np.array(mpl.colors.to_rgb(c2))
-    return mpl.colors.to_hex((1 - mix) * rgb1 + mix * rgb2)
+    mix = float(np.clip(mix, 0.0, 1.0))
+    rgb1 = np.array(ImageColor.getrgb(c1), dtype=float) / 255.0
+    rgb2 = np.array(ImageColor.getrgb(c2), dtype=float) / 255.0
+    rgb = (1 - mix) * rgb1 + mix * rgb2
+    rgb_255 = np.clip(np.round(rgb * 255), 0, 255).astype(int)
+    return "#{:02x}{:02x}{:02x}".format(*rgb_255.tolist())
+
+
+_FONT_SIZE = 12
 
 
 def change_font_size(size: int) -> None:
-    """Update matplotlib font sizes globally.
-
-    Parameters
-    ----------
-    size : int
-        Font size applied to legend, axis labels, ticks, and title.
-    """
-    from matplotlib import pylab
-
-    pylab.rcParams.update(
-        {
-            "legend.fontsize": size,
-            "axes.labelsize": size,
-            "axes.titlesize": size,
-            "xtick.labelsize": size,
-            "ytick.labelsize": size,
-            "font.family": "calibri",
-        }
-    )
+    """Set package-level preferred font size for external plotting layers."""
+    global _FONT_SIZE
+    _FONT_SIZE = int(size)
 
 
 def binning(arr: np.ndarray, downscale: int = 2) -> np.ndarray:

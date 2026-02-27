@@ -1,29 +1,12 @@
-"""Backward-compatible facade for the Dispersive_XAS package.
+"""Backward-compatible facade.
 
-All symbols that were previously defined in this monolithic module are
-re-exported here so that existing code using::
-
-    import Dispersive_XAS.xas as xas
-
-continues to work without modification.
-
-For new code, prefer importing from the package directly::
-
-    import Dispersive_XAS as dxas
-    # or from specific submodules:
-    from Dispersive_XAS.preprocessing import pre_process
-    from Dispersive_XAS.spectrum import norm_spec
-    from Dispersive_XAS.calibration import EDXAS_Calibrate
-    from Dispersive_XAS.analysis import XAS_spec
-    from Dispersive_XAS.visualization import PgSpec
+Prefer `import Dispersive_XAS as dxas` for new code.
 """
 
-# Re-export everything from the reorganised submodules
-from .analysis import XAS_spec, spec_average
-from .batch import norm_spec_preview, plot_spectra_in_chunks
-from .calibration import EDXAS_Calibrate, calibrate_regression
-from .image_processing import find_shifts, register_thresholding, stitch_scans
-from .io import (
+from .core.analysis import XAS_spec, spec_average
+from .core.batch import norm_spec_preview
+from .core.calibration import EDXAS_Calibrate, calibrate_regression
+from .core.data_io import (
     load_bluesky_h5,
     load_nexus_entry,
     load_processed,
@@ -31,8 +14,9 @@ from .io import (
     raw_loading,
     saveh5,
 )
-from .preprocessing import pre_process, pre_process_scan, ximea_correction
-from .spectrum import (
+from .core.image_processing import find_shifts, register_thresholding, stitch_scans
+from .core.preprocessing import pre_process, pre_process_scan, ximea_correction
+from .core.spectrum import (
     atten_slope_corr,
     find_edge_jump,
     find_edge_pnts,
@@ -46,8 +30,8 @@ from .spectrum import (
     spec_wrapper,
     spectrum_generate,
 )
-from .standards import list_standards, standard_spec
-from .utils import (
+from .core.standards import list_standards, standard_spec
+from .core.utils import (
     binning,
     change_font_size,
     color_gradient,
@@ -58,3 +42,13 @@ from .utils import (
     timestamp_convert,
 )
 from .visualization import PgSpec, show_roi
+from .web import (
+    plot_spectra_in_chunks,
+    preview_spectra_html,
+    select_rect_roi,
+    show_image,
+    show_image_stack,
+    show_line,
+    show_lines,
+    show_mask_overlay,
+)

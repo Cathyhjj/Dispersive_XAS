@@ -1,92 +1,58 @@
-"""Dispersive XAS (DXAS) analysis package.
+"""Dispersive_XAS package.
 
-Provides a complete pipeline for converting raw dispersive X-ray absorption
-spectroscopy images into calibrated, energy-resolved spectra:
-
-    raw images → pre-processing → ROI selection → spectrum generation
-    → normalisation → energy calibration
-
-Submodules
-----------
-preprocessing
-    Dark correction, median denoising, Beer-Lambert transmission/absorption.
-spectrum
-    Spectral generation, normalisation, interpolation, cropping, peak finding.
-calibration
-    Pixel-to-energy polynomial regression (:class:`EDXAS_Calibrate`).
-visualization
-    Interactive pyqtgraph image viewer with ROI management (:class:`PgSpec`).
-analysis
-    High-level :class:`XAS_spec` analysis workflow class.
-io
-    Data loading/saving (custom HDF5, NeXus areaDetector, Bluesky).
-utils
-    Date/time helpers, colour gradients, image binning, GIF/video export.
-standards
-    Built-in reference standard XAS spectra for calibration.
-crystal
-    Crystal-optics calculations (Laue / Bragg geometry).
-image_processing
-    Low-level image transformations (rotate, shift, flip, filter).
-h5io
-    HDF5 read/write library (h5rw format).
-
-Quick-start
------------
->>> import Dispersive_XAS as dxas
->>> result = dxas.pre_process(data, flat, savedata=False)
->>> viewer = dxas.PgSpec(result["mux"])
->>> xas_obj = dxas.XAS_spec(result["mux"], m=mask)
+Architecture:
+- `Dispersive_XAS.core`: numerical/analysis code
+- `Dispersive_XAS.web`: GUI/web plotting and ROI tools
 """
 
-__version__ = "0.2.0"
-
-# --- Core submodules (always available) ---
-from . import crystal
-from . import h5io
-from . import image_processing
-
-# --- Functional submodules ---
-from . import analysis
-from . import batch
-from . import calibration
-from . import io
-from . import preprocessing
-from . import spectrum
-from . import standards
-from . import utils
+from . import core
+from . import web
 from . import visualization
-
-# --- Flat public API (mirrors numpy-style: functions available at top level) ---
-from .analysis import XAS_spec, spec_average
-from .batch import norm_spec_preview, plot_spectra_in_chunks, preview_spectra_html
-from .calibration import EDXAS_Calibrate, calibrate_regression
-from .image_processing import find_shifts, register_thresholding, stitch_scans
-from .io import (
+from .core import (
+    EDXAS_Calibrate,
+    XAS_spec,
+    atten_slope_corr,
+    calibrate_regression,
+    find_edge_jump,
+    find_edge_pnts,
+    find_shifts,
+    intensity_at_energy,
+    interpt_spec,
+    list_standards,
     load_bluesky_h5,
     load_nexus_entry,
     load_processed,
     load_processed_scans,
-    raw_loading,
-    saveh5,
-)
-from .preprocessing import pre_process, pre_process_scan, ximea_correction
-from .spectrum import (
-    atten_slope_corr,
-    find_edge_jump,
-    find_edge_pnts,
-    intensity_at_energy,
-    interpt_spec,
     norm_spec,
+    norm_spec_preview,
     peak_finder,
+    pre_process,
+    pre_process_scan,
+    raw_loading,
+    register_thresholding,
+    saveh5,
+    spec_average,
     spec_cropping,
     spec_save,
     spec_shaper,
     spec_wrapper,
     spectrum_generate,
+    standard_spec,
+    stitch_scans,
+    ximea_correction,
 )
-from .standards import list_standards, standard_spec
-from .utils import (
+from .core import calibration as calibration
+from .core import analysis as analysis
+from .core import batch as core_batch
+from .core import crystal as crystal
+from .core import data_io as data_io
+from .core import h5io as h5io
+from .core import image_processing as image_processing
+from .core import preprocessing as preprocessing
+from .core import spectrum as spectrum
+from .core import standards as standards
+from .core import utils as utils
+from .core.utils import (
     binning,
     change_font_size,
     color_gradient,
@@ -97,47 +63,58 @@ from .utils import (
     timestamp_convert,
 )
 from .visualization import PgSpec, show_roi
+from .web import (
+    batch as batch,
+    plot_spectra_in_chunks,
+    preview_spectra_html,
+    select_rect_roi,
+    show_image,
+    show_image_stack,
+    show_line,
+    show_lines,
+    show_mask_overlay,
+)
+
+# Backward-compat alias for previous `Dispersive_XAS.io` API shape.
+io = data_io
+
+__version__ = "0.3.0"
 
 __all__ = [
-    # submodules
+    "core",
+    "web",
+    "visualization",
     "crystal",
-    "h5io",
-    "image_processing",
     "analysis",
     "batch",
-    "calibration",
-    "io",
+    "core_batch",
+    "h5io",
+    "image_processing",
     "preprocessing",
     "spectrum",
     "standards",
     "utils",
-    "visualization",
-    # analysis
+    "data_io",
+    "io",
     "XAS_spec",
     "spec_average",
-    # batch
     "norm_spec_preview",
     "plot_spectra_in_chunks",
     "preview_spectra_html",
-    # calibration
     "EDXAS_Calibrate",
     "calibrate_regression",
-    # image_processing
     "find_shifts",
     "register_thresholding",
     "stitch_scans",
-    # io
     "load_bluesky_h5",
     "load_nexus_entry",
     "load_processed",
     "load_processed_scans",
     "raw_loading",
     "saveh5",
-    # preprocessing
     "pre_process",
     "pre_process_scan",
     "ximea_correction",
-    # spectrum
     "atten_slope_corr",
     "find_edge_jump",
     "find_edge_pnts",
@@ -150,10 +127,8 @@ __all__ = [
     "spec_shaper",
     "spec_wrapper",
     "spectrum_generate",
-    # standards
     "list_standards",
     "standard_spec",
-    # utils
     "binning",
     "change_font_size",
     "color_gradient",
@@ -162,7 +137,12 @@ __all__ = [
     "make_video",
     "time_now",
     "timestamp_convert",
-    # visualization
     "PgSpec",
+    "select_rect_roi",
     "show_roi",
+    "show_line",
+    "show_lines",
+    "show_image",
+    "show_image_stack",
+    "show_mask_overlay",
 ]

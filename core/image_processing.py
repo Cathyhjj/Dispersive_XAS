@@ -88,7 +88,7 @@ def register_thresholding(
         Structuring element for binary opening.  Defaults to a 5×5 array of
         ones.
     show : bool
-        If ``True``, display the result via pyqtgraph.
+        If ``True``, trigger optional display hooks (headless by default).
 
     Returns
     -------
@@ -108,8 +108,9 @@ def register_thresholding(
     )
 
     if show:
-        import pyqtgraph as pg
-        pg.image(binary)
+        from ._display import show_image_stack
+
+        show_image_stack(binary.astype(float), title="Thresholded registration stack", show=True)
 
     return binary
 
@@ -154,7 +155,7 @@ def stitch_scans(
     masks : ndarray, shape (N, H, W)
         Boolean mask stack (``True`` = include pixel).
     show : bool
-        If ``True``, display the result via pyqtgraph.
+        If ``True``, trigger optional display hooks (headless by default).
 
     Returns
     -------
@@ -165,7 +166,8 @@ def stitch_scans(
     mean = masked.mean(axis=0)
 
     if show:
-        import pyqtgraph as pg
-        pg.image(mean.T)
+        from ._display import show_image
+
+        show_image(mean.T, title="Stitched scan mean (transposed)", show=True)
 
     return mean

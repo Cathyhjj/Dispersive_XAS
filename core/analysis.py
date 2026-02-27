@@ -75,7 +75,9 @@ class XAS_spec:
         if m is None:
             self.m = np.ones(self.imgs[0].shape, dtype=bool)
         else:
-            self.m = m
+            self.m = np.asarray(m, dtype=bool)
+            if self.m.ndim not in (2, 3):
+                raise ValueError("Mask m must be 2-D or 3-D.")
 
     # ------------------------------------------------------------------
     # Image filtering
@@ -177,10 +179,25 @@ class XAS_spec:
             return imgs
 
     def show(self, alpha: float = 0.1) -> None:
-        """Display images with mask overlay via pyqtgraph."""
-        import pyqtgraph as pg
+        """Return/display masked images without hard GUI dependency."""
+        from ._display import show_image_stack, show_mask_overlay
 
-        pg.image(self.imgs * (alpha + self.m))
+        if self.data_range == 1:
+            mask = self.m if self.m.ndim == 2 else self.m[0]
+            show_mask_overlay(
+                self.imgs[0],
+                mask,
+                title="XAS image + mask",
+                show=True,
+            )
+            return
+
+        if self.m.ndim == 2:
+            mask_stack = np.repeat(self.m[np.newaxis, ...], self.data_range, axis=0)
+        else:
+            mask_stack = self.m
+        display = self.imgs * (alpha + mask_stack.astype(float))
+        show_image_stack(display, title="XAS image stack + mask", show=True)
 
     # ------------------------------------------------------------------
     # Spectrum generation
@@ -439,7 +456,7 @@ def spec_average(
     spec_aver : ndarray, shape (2, intp_pnts)
         Averaged spectrum.
     """
-    import matplotlib.pyplot as plt
+    from ._display import show_lines
 
     spec = np.asarray(
         [
@@ -465,10 +482,29 @@ def spec_average(
         )
 
     if show:
-        plt.plot(
-            spec_aver[0], spec_aver[1],
-            color="r", label="averaged", alpha=0.3, linewidth=5,
+        traces = [
+            {
+                "x": spec[i][0],
+                "y": spec[i][1],
+                "name": f"spec_{i}",
+                "style": {"alpha": 0.25, "linewidth": 1},
+            }
+            for i in range(spec.shape[0])
+        ]
+        traces.append(
+            {
+                "x": spec_aver[0],
+                "y": spec_aver[1],
+                "name": "averaged",
+                "style": {"color": "red", "linewidth": 4},
+            }
         )
-        plt.legend()
+        show_lines(
+            traces=traces,
+            title="Averaged calibrated spectra",
+            x_label="Energy (eV)",
+            y_label="Normalized absorption",
+            show=True,
+        )
 
     return spec, spec_aver

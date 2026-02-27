@@ -184,7 +184,7 @@ def ximea_correction(
         Region to use for estimating the column offset.
         Defaults to ``np.s_[25:475, :]``.
     show : bool
-        If ``True``, display diagnostic plots (requires pyqtgraph).
+        If ``True``, trigger optional display hooks (headless by default).
 
     Returns
     -------
@@ -204,16 +204,28 @@ def ximea_correction(
     data_corr_divide = data / ximea_offset
 
     if show:
-        import matplotlib.pyplot as plt
-        import pyqtgraph as pg
+        from ._display import show_image, show_line
 
-        plt.imshow(data * corr_mask, vmin=400, vmax=1000)
-        plt.figure()
-        plt.plot(ximea_offset)
-        plt.title("Ximea column offset")
-        pg.image(data_corr_minus.T)
-        pg.image(data_corr_divide.T)
-        pg.image(nd.median_filter(data_corr_minus, size=3))
-        pg.image(nd.median_filter(data_corr_divide, size=3))
+        show_image(data * corr_mask, title="Ximea correction ROI", show=True)
+        show_line(
+            np.arange(len(ximea_offset)),
+            ximea_offset,
+            title="Ximea column offset",
+            x_label="Column",
+            y_label="Offset",
+            show=True,
+        )
+        show_image(data_corr_minus.T, title="Offset subtraction (transposed)", show=True)
+        show_image(data_corr_divide.T, title="Offset division (transposed)", show=True)
+        show_image(
+            nd.median_filter(data_corr_minus, size=3),
+            title="Median filtered (minus)",
+            show=True,
+        )
+        show_image(
+            nd.median_filter(data_corr_divide, size=3),
+            title="Median filtered (divide)",
+            show=True,
+        )
 
     return data_corr_minus, data_corr_divide

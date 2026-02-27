@@ -10,17 +10,11 @@ Key distinction
 calibration needed).  For calibrated, energy-axis normalisation use
 :func:`~Dispersive_XAS.spectrum.norm_spec` instead.
 
-Output formats
---------------
+Output format
+-------------
 ``output_format='html'`` (default)
     Three interactive Plotly HTML files per chunk — open in any browser,
     supports free zoom, pan, and hover tooltips.
-
-``output_format='png'``
-    Three static Matplotlib PNG files per chunk (original behaviour).
-
-``output_format='both'``
-    All six files per chunk.
 
 Inline display (Jupyter)
 ------------------------
@@ -34,57 +28,15 @@ from typing import Optional, Tuple
 
 import numpy as np
 
-from .io import load_nexus_entry
+from ..core.batch import norm_spec_preview
+from ..core.data_io import load_nexus_entry
 
 __all__ = [
     "norm_spec_preview",
     "plot_spectra_in_chunks",
     "preview_spectra_html",
 ]
-
 _DEFAULT_FACTOR = 200.0
-
-
-def norm_spec_preview(
-    spec: np.ndarray,
-    x1: int,
-    x2: int,
-    factor: float = _DEFAULT_FACTOR,
-) -> np.ndarray:
-    """Normalise a 1-D spectrum by its value range within a pixel window.
-
-    Non-finite values are replaced with in-range statistics before
-    normalisation so the function is safe for raw (uncalibrated) spectra.
-
-    .. note::
-        This is a **pixel-index** normalisation intended for quick batch
-        previews.  It returns values in ``[0, factor]``, not ``[0, 1]``.
-        For scientific energy-axis normalisation use
-        :func:`~Dispersive_XAS.spectrum.norm_spec`.
-
-    Parameters
-    ----------
-    spec : ndarray, shape (W,)
-        1-D spectrum (column-averaged intensity across spatial rows).
-    x1, x2 : int
-        Pixel index bounds of the reference region used for normalisation.
-    factor : float
-        Output scale (default: 200).
-
-    Returns
-    -------
-    ndarray, shape (W,)
-        Normalised spectrum in ``[0, factor]``.
-    """
-    spec = np.nan_to_num(
-        spec,
-        nan=float(np.nanmean(spec)),
-        posinf=float(np.nanmax(spec)),
-        neginf=float(np.nanmin(spec)),
-    )
-    ref = spec[x1:x2]
-    smin, smax = float(np.min(ref)), float(np.max(ref))
-    return ((spec - smin) / (smax - smin + 1e-12)) * factor
 
 
 def _compute_chunk_specs(
@@ -195,23 +147,21 @@ def plot_spectra_in_chunks(
     chunk_size : int
         Frames per processing chunk (default: 1000).
     cmap_name : str
-        Colormap name (default: ``'magma'``).  Accepted by both Matplotlib
-        and Plotly.
+        Colormap name (default: ``'magma'``).
     factor : float
         Normalisation scale passed to :func:`norm_spec_preview`.
-    output_format : {'html', 'png', 'both'}
-        * ``'html'`` – interactive Plotly HTML (default; open in any browser).
-        * ``'png'``  – static Matplotlib PNG (original behaviour).
-        * ``'both'`` – save all six files per chunk.
+    output_format : {'html'}
+        Interactive Plotly HTML output. Any non-``'html'`` value falls back
+        to ``'html'`` in the web-first workflow.
     max_line_traces : int
         Maximum number of line traces in the no-averaging HTML plot.
         Frames are subsampled uniformly when the chunk exceeds this limit.
-        Default: 200.  (Ignored for PNG output.)
+        Default: 200.
     display_inline : bool
         If ``True``, call ``fig.show()`` after saving each HTML file so that
         the interactive Plotly figures appear directly inside a Jupyter
         notebook cell.  Users can then zoom, pan, and hover without opening
-        external files.  Default: ``False``.  (Ignored for PNG output.)
+        external files.  Default: ``False``.
     """
     data = load_nexus_entry(data_path)["data"]   # (N, H, W)
     flat = load_nexus_entry(flat_path)["data"]    # (N, H, W)
@@ -229,8 +179,12 @@ def plot_spectra_in_chunks(
     fr0, fr1 = flat_range
     flat_avg = np.average(flat[:, fr0:fr1, :], axis=0)  # (fr1-fr0, W)
 
-    do_html = output_format in ("html", "both")
-    do_png  = output_format in ("png",  "both")
+    if output_format != "html":
+        print(
+            f"output_format={output_format!r} is deprecated; using 'html' interactive output."
+        )
+    do_html = True
+    do_png = False
 
     for chunk_start in range(start_frame, end_frame, chunk_size):
         chunk_end = min(chunk_start + chunk_size, end_frame)
@@ -252,14 +206,6 @@ def plot_spectra_in_chunks(
                 x1, col_end, aver_n, cmap_name, factor,
                 save_dir, data_path, max_line_traces,
                 display_inline=display_inline,
-            )
-
-        if do_png:
-            saved += _save_png_chunk(
-                per_frame_specs, specs_avg,
-                chunk_start, chunk_end, n_frames, num_groups,
-                x1, x2, col_end, aver_n, cmap_name, factor,
-                save_dir, data_path,
             )
 
         print("Saved:\n" + "\n".join(f"  {p}" for p in saved))
@@ -616,95 +562,6 @@ def _save_png_chunk(
     save_dir: str,
     data_path: str,
 ) -> list:
-    """Save three static Matplotlib PNG plots for one chunk.
-
-    Returns
-    -------
-    list of str
-        Paths of the three saved PNG files.
-    """
-    import matplotlib.pyplot as plt
-    from matplotlib import colormaps
-
-    cmap = colormaps.get_cmap(cmap_name)
-    scan_name = os.path.basename(data_path)
-    W = per_frame_specs.shape[1]
-    saved = []
-
-    # ---- 1) Lines (no averaging) ------------------------------------------
-    fig, ax = plt.subplots(figsize=(5, 8))
-    for i, sp in enumerate(per_frame_specs):
-        ax.plot(sp + i)
-    ax.set_xlim(x1, x2 + 50)
-    ax.set_xlabel(scan_name)
-    ax.set_ylabel("Frame index")
-    ax.set_title(f"Lines (no avg) frames {chunk_start}–{chunk_end}  [N={n_frames}]")
-    y_pos = np.arange(0, n_frames, max(1, n_frames // 10))
-    ax.set_yticks(y_pos, [str(chunk_start + y) for y in y_pos])
-    ax.set_ylim(
-        float(np.min(per_frame_specs[0][x1:x2])),
-        float(np.max(per_frame_specs[-1][x1:x2])) + (n_frames - 1),
-    )
-    path_noavg = os.path.join(
-        save_dir,
-        f"lines_noavg_{chunk_start:05d}-{chunk_end:05d}_N{n_frames}.png",
-    )
-    fig.savefig(path_noavg, dpi=200, bbox_inches="tight")
-    plt.close(fig)
-    saved.append(path_noavg)
-
-    # ---- 2) Lines (averaged) ----------------------------------------------
-    fig, ax = plt.subplots(figsize=(5, 8))
-    if num_groups > 0:
-        colors = cmap(np.linspace(0, 1, num_groups))
-        for gi, color in enumerate(colors):
-            ax.plot(specs_avg[gi] + gi, color=color, linewidth=1)
-        y_pos = np.arange(0, num_groups, max(1, num_groups // 10))
-        ax.set_yticks(y_pos, [str(chunk_start + y * aver_n) for y in y_pos])
-        ax.set_ylim(
-            float(np.min(specs_avg[0][x1:x2])),
-            float(np.max(specs_avg[-1][x1:x2])) + (num_groups - 1),
-        )
-    ax.set_xlim(x1, x2 + 50)
-    ax.set_xlabel(scan_name)
-    ax.set_ylabel("Averaged frame index")
-    ax.set_title(
-        f"Lines (avg {aver_n}) frames {chunk_start}–{chunk_end}  [N={num_groups}]"
-    )
-    path_avg = os.path.join(
-        save_dir,
-        f"lines_avg{aver_n}_{chunk_start:05d}-{chunk_end:05d}_N{num_groups}.png",
-    )
-    fig.savefig(path_avg, dpi=200, bbox_inches="tight")
-    plt.close(fig)
-    saved.append(path_avg)
-
-    # ---- 3) Imshow --------------------------------------------------------
-    fig, ax = plt.subplots(figsize=(8, 10))
-    im = ax.imshow(
-        per_frame_specs,
-        aspect="auto",
-        cmap=cmap_name,
-        vmin=0,
-        vmax=1.5 * factor,
-        extent=[0, W, chunk_start, chunk_end],
-        origin="lower",
-    )
-    ax.set_xlim(x1, x2 + 50)
-    ax.set_xlabel(scan_name)
-    ax.set_ylabel("Frame index")
-    ax.set_title(
-        f"Imshow (no avg) frames {chunk_start}–{chunk_end}  [N={n_frames}]"
-    )
-    ax.set_yticks(np.arange(chunk_start, chunk_end + 1, 100))
-    ax.set_yticks(np.arange(chunk_start, chunk_end + 1, 10), minor=True)
-    fig.colorbar(im, ax=ax, label="Normalised intensity")
-    path_im = os.path.join(
-        save_dir,
-        f"imshow_{chunk_start:05d}-{chunk_end:05d}_N{n_frames}.png",
-    )
-    fig.savefig(path_im, dpi=200, bbox_inches="tight")
-    plt.close(fig)
-    saved.append(path_im)
-
-    return saved
+    """Deprecated static-PNG path retained for compatibility."""
+    print("PNG preview output is deprecated in the web-first refactor. No files written.")
+    return []
