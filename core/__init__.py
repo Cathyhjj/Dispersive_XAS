@@ -4,14 +4,24 @@ This namespace excludes GUI/web interactivity.
 """
 
 from .analysis import XAS_spec, spec_average
-from .batch import norm_spec_preview
+from .batch import (
+    apply_calibration_to_scan,
+    calibrate_from_reference_foil,
+    find_h5_files,
+    find_nearest_flatfield,
+    load_calibration_model,
+    norm_spec_preview,
+    save_calibration_model,
+)
 from .calibration import EDXAS_Calibrate, calibrate_regression
 from .data_io import (
+    load_mask_h5,
     load_bluesky_h5,
     load_nexus_entry,
     load_processed,
     load_processed_scans,
     raw_loading,
+    save_mask_h5,
     saveh5,
 )
 from .image_processing import find_shifts, register_thresholding, stitch_scans
@@ -36,6 +46,12 @@ __all__ = [
     "XAS_spec",
     "spec_average",
     "norm_spec_preview",
+    "find_h5_files",
+    "find_nearest_flatfield",
+    "calibrate_from_reference_foil",
+    "save_calibration_model",
+    "load_calibration_model",
+    "apply_calibration_to_scan",
     "EDXAS_Calibrate",
     "calibrate_regression",
     "find_shifts",
@@ -43,10 +59,12 @@ __all__ = [
     "stitch_scans",
     "load_bluesky_h5",
     "load_nexus_entry",
+    "load_mask_h5",
     "load_processed",
     "load_processed_scans",
     "raw_loading",
     "saveh5",
+    "save_mask_h5",
     "pre_process",
     "pre_process_scan",
     "ximea_correction",

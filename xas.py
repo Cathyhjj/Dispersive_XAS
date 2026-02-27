@@ -4,14 +4,24 @@ Prefer `import Dispersive_XAS as dxas` for new code.
 """
 
 from .core.analysis import XAS_spec, spec_average
-from .core.batch import norm_spec_preview
+from .core.batch import (
+    apply_calibration_to_scan,
+    calibrate_from_reference_foil,
+    find_h5_files,
+    find_nearest_flatfield,
+    load_calibration_model,
+    norm_spec_preview,
+    save_calibration_model,
+)
 from .core.calibration import EDXAS_Calibrate, calibrate_regression
 from .core.data_io import (
     load_bluesky_h5,
+    load_mask_h5,
     load_nexus_entry,
     load_processed,
     load_processed_scans,
     raw_loading,
+    save_mask_h5,
     saveh5,
 )
 from .core.image_processing import find_shifts, register_thresholding, stitch_scans

@@ -10,7 +10,7 @@ import numpy as np
 
 from .. import h5io
 
-__all__ = ["raw_loading", "load_processed", "load_processed_scans"]
+__all__ = ["raw_loading", "load_processed", "load_processed_scans", "load_mask_h5"]
 
 
 def raw_loading(folder: str, detector: Optional[str] = None) -> np.ndarray:
@@ -55,3 +55,18 @@ def load_processed_scans(folder: str) -> dict:
         files = sorted(glob.glob(os.path.join(folder, sub, "*.h5")))
         result[key] = np.asarray([h5io.h5read(f)["var1"] for f in files])
     return result
+
+
+def load_mask_h5(
+    file_name: str = "mask",
+    folder_name: str = "mask",
+    as_bool: bool = True,
+) -> np.ndarray:
+    """Load a saved mask from HDF5 without mixing save logic."""
+    path = os.path.join(folder_name, file_name)
+    if not path.endswith(".h5"):
+        path += ".h5"
+    arr = np.asarray(h5io.h5read(path)["var1"])
+    if as_bool:
+        return arr.astype(bool)
+    return arr

@@ -23,10 +23,12 @@ a Jupyter notebook cell (in addition to saving the HTML files).  This
 enables instant interactive zoom/pan without leaving the notebook.
 """
 
+import json
 import os
 from typing import Optional, Tuple
 
 import numpy as np
+import scipy.ndimage as ndi
 
 from ..core.batch import norm_spec_preview
 from ..core.data_io import load_nexus_entry
@@ -50,6 +52,7 @@ def _compute_chunk_specs(
     norm_x1: int,
     norm_x2: int,
     factor: float,
+    median_size: int = 0,
 ) -> Tuple[np.ndarray, np.ndarray, int, int, int]:
     """Compute per-frame and grouped-average spectra for one chunk.
 
@@ -63,30 +66,48 @@ def _compute_chunk_specs(
     num_groups : int
     W : int  — detector width in pixels
     """
-    n_frames = chunk_end - chunk_start
+    def _normalize_specs_batch(specs: np.ndarray) -> np.ndarray:
+        if specs.size == 0:
+            return specs
+        x1 = max(0, min(int(norm_x1), specs.shape[1] - 1))
+        x2 = max(x1 + 1, min(int(norm_x2), specs.shape[1]))
+        ref = specs[:, x1:x2]
+        smin = np.min(ref, axis=1, keepdims=True)
+        smax = np.max(ref, axis=1, keepdims=True)
+        out = ((specs - smin) / (smax - smin + 1e-12)) * float(factor)
+        out[~np.isfinite(out)] = 0.0
+        return out
 
-    per_frame_specs = []
-    for fi in range(chunk_start, chunk_end):
-        data_row = np.average(data[fi : fi + 1, fr0:fr1, :], axis=0)
-        mux = np.log(flat_avg / data_row)
-        mux[~np.isfinite(mux)] = 0.0
-        spec = np.average(mux, axis=0)
-        per_frame_specs.append(norm_spec_preview(spec, norm_x1, norm_x2, factor))
-    per_frame_specs = np.asarray(per_frame_specs)  # (n_frames, W)
+    n_frames = int(chunk_end - chunk_start)
+    if n_frames <= 0:
+        return np.empty((0, 0)), np.empty((0, 0)), 0, 0, 0
 
-    W = per_frame_specs.shape[1]
-    num_groups = n_frames // aver_n if aver_n > 0 else 0
+    # Vectorized chunk processing for speed.
+    chunk = np.asarray(data[chunk_start:chunk_end, fr0:fr1, :], dtype=np.float32)
+    if int(median_size) > 1:
+        k = int(median_size)
+        if k % 2 == 0:
+            k += 1
+        # Spatial median filter only (rows, columns); do not blur time axis.
+        chunk = ndi.median_filter(chunk, size=(1, k, k), mode="nearest")
 
-    specs_avg = []
-    for gi in range(num_groups):
-        s = chunk_start + gi * aver_n
-        e = s + aver_n
-        data_row = np.average(data[s:e, fr0:fr1, :], axis=0)
-        mux = np.log(flat_avg / data_row)
-        mux[~np.isfinite(mux)] = 0.0
-        sp = np.average(mux, axis=0)
-        specs_avg.append(norm_spec_preview(sp, norm_x1, norm_x2, factor))
-    specs_avg = np.asarray(specs_avg) if specs_avg else np.empty((0, W))
+    flat2d = np.asarray(flat_avg, dtype=np.float32)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        mux = np.log(flat2d[None, :, :] / chunk)
+    mux[~np.isfinite(mux)] = 0.0
+    per_frame_specs = _normalize_specs_batch(np.mean(mux, axis=1))
+
+    W = int(per_frame_specs.shape[1])
+    num_groups = int(n_frames // aver_n) if aver_n > 0 else 0
+    if num_groups > 0:
+        usable = chunk[: num_groups * aver_n]
+        grouped = usable.reshape(num_groups, int(aver_n), fr1 - fr0, W).mean(axis=1)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            gmux = np.log(flat2d[None, :, :] / grouped)
+        gmux[~np.isfinite(gmux)] = 0.0
+        specs_avg = _normalize_specs_batch(np.mean(gmux, axis=1))
+    else:
+        specs_avg = np.empty((0, W), dtype=np.float32)
 
     return per_frame_specs, specs_avg, n_frames, num_groups, W
 
@@ -108,6 +129,7 @@ def plot_spectra_in_chunks(
     output_format: str = "html",
     max_line_traces: int = 200,
     display_inline: bool = False,
+    median_size: int = 0,
 ) -> None:
     """Generate and save batch preview plots for a large DXAS scan.
 
@@ -118,7 +140,7 @@ def plot_spectra_in_chunks(
        mode this is fully zoomable and shows pixel/frame/intensity on hover.
     2. **Lines (averaged)** – spectra averaged in groups of *aver_n*, colour-
        coded from first (dark) to last (bright) frame in the chunk.
-    3. **Lines (no averaging)** – one spectrum per frame, vertically offset.
+    3. **Lines (no averaging)** – one spectrum per frame (subsampled if needed).
        In HTML mode, frames are subsampled to at most *max_line_traces* traces
        when the chunk exceeds that limit (the heatmap covers the full detail).
 
@@ -162,6 +184,9 @@ def plot_spectra_in_chunks(
         the interactive Plotly figures appear directly inside a Jupyter
         notebook cell.  Users can then zoom, pan, and hover without opening
         external files.  Default: ``False``.
+    median_size : int
+        Optional spatial median filter kernel size for hot-pixel suppression.
+        ``0`` or ``1`` disables filtering; ``3`` is a common fast choice.
     """
     data = load_nexus_entry(data_path)["data"]   # (N, H, W)
     flat = load_nexus_entry(flat_path)["data"]    # (N, H, W)
@@ -192,6 +217,7 @@ def plot_spectra_in_chunks(
             data, flat_avg, fr0, fr1,
             chunk_start, chunk_end,
             aver_n, norm_x1, norm_x2, factor,
+            median_size=median_size,
         )
         if n_frames <= 0:
             continue
@@ -225,6 +251,7 @@ def preview_spectra_html(
     factor: float = _DEFAULT_FACTOR,
     max_line_traces: int = 200,
     display_inline: bool = True,
+    median_size: int = 0,
 ) -> None:
     """Generate **three** interactive HTML plots covering **all frames**.
 
@@ -273,6 +300,9 @@ def preview_spectra_html(
         If ``True`` (default), render each figure directly inside the Jupyter
         notebook cell via ``fig.show()``.  Set to ``False`` to only save the
         HTML files without displaying them.
+    median_size : int
+        Optional spatial median filter kernel size for hot-pixel suppression.
+        ``0`` or ``1`` disables filtering; ``3`` is a common fast choice.
     """
     data = load_nexus_entry(data_path)["data"]   # (N, H, W)
     flat = load_nexus_entry(flat_path)["data"]    # (N, H, W)
@@ -300,6 +330,7 @@ def preview_spectra_html(
             data, flat_avg, fr0, fr1,
             chunk_start, chunk_end,
             aver_n, norm_x1, norm_x2, factor,
+            median_size=median_size,
         )
         if n_frames <= 0:
             continue
@@ -382,19 +413,24 @@ def _save_html_chunk(
     pixel_axis = list(range(x1, col_end))
     frame_axis = list(range(chunk_start, chunk_end))
 
-    # Subsampling for the no-avg line plot
+    # Subsampling for line plots so we keep responsiveness on very large scans.
     step = max(1, n_frames // max_line_traces)
     disp_idx = list(range(0, n_frames, step))
     n_disp = len(disp_idx)
-    subsample_note = (
-        f"1 in {step} shown ({n_disp} traces)" if step > 1
-        else f"all {n_frames:,}"
+    subsample_note = f"1 in {step} shown ({n_disp} traces)" if step > 1 else f"all {n_frames:,}"
+    avg_step = max(1, num_groups // max_line_traces) if num_groups > 0 else 1
+    avg_idx = list(range(0, num_groups, avg_step)) if num_groups > 0 else []
+    n_avg_disp = len(avg_idx)
+    avg_note = (
+        f"every {aver_n} frame(s), 1 in {avg_step} shown ({n_avg_disp} traces)"
+        if num_groups > 0 and avg_step > 1
+        else f"every {aver_n} frame(s), {num_groups:,} traces"
     )
 
     # ---- Build combined 3-column figure (side by side) --------------------
     subplot_titles = [
         f"<b>Heatmap</b><br>{n_frames:,} frames",
-        f"<b>Averaged lines</b><br>every {aver_n} frame(s)  [{num_groups:,} traces]",
+        f"<b>Averaged lines</b><br>{avg_note}",
         f"<b>Individual frames</b><br>no averaging  [{subsample_note}]",
     ]
     fig = make_subplots(
@@ -402,7 +438,7 @@ def _save_html_chunk(
         subplot_titles=subplot_titles,
         shared_xaxes=False,  # each panel has its own x-axis (independent zoom)
         shared_yaxes=False,  # each panel has its own y-axis (independent zoom)
-        horizontal_spacing=0.10,
+        horizontal_spacing=0.12,
     )
 
     # ---- Col 1: Heatmap ----------------------------------------------------
@@ -416,7 +452,7 @@ def _save_html_chunk(
             zmax=1.5 * factor,
             colorbar=dict(
                 title=dict(text="Intensity", side="right"),
-                len=0.5, x=0.29, y=0.5, thickness=10,
+                len=0.5, x=0.248, y=0.5, thickness=8,
             ),
             hovertemplate=(
                 "Pixel: %{x}<br>Frame: %{y}<br>"
@@ -426,77 +462,148 @@ def _save_html_chunk(
         row=1, col=1,
     )
 
-    # ---- Col 2: Averaged lines ---------------------------------------------
-    if num_groups > 0:
-        colors = plotly.colors.sample_colorscale(
-            cmap_name, np.linspace(0, 1, num_groups)
-        )
+    def _rough_edge_jump(y: np.ndarray) -> float:
+        y = np.asarray(y, dtype=float)
+        if y.size < 8:
+            jump = float(np.nanpercentile(y, 90) - np.nanpercentile(y, 10))
+            return jump if np.isfinite(jump) and jump > 1e-9 else 1.0
+        n = max(2, y.size // 10)
+        pre = float(np.nanmean(y[:n]))
+        post = float(np.nanmean(y[-n:]))
+        jump = abs(post - pre)
+        if not np.isfinite(jump) or jump <= 1e-9:
+            jump = float(np.nanpercentile(y, 90) - np.nanpercentile(y, 10))
+        return jump if np.isfinite(jump) and jump > 1e-9 else 1.0
+
+    def _default_offset(lines: list[np.ndarray]) -> float:
+        if not lines:
+            return 1.0
+        # Fast rough default: about one-third of the edge jump.
+        jump = _rough_edge_jump(lines[0])
+        return max(jump / 3.0, 1e-6)
+
+    def _stacked_range(lines: list[np.ndarray], offset: float, scale: float) -> list[float]:
+        if not lines:
+            return [0.0, 1.0]
+        y0 = np.asarray(lines[0], dtype=float)
+        y_last = np.asarray(lines[-1], dtype=float)
+        ymin = float(np.nanmin(y0))
+        n = len(lines)
+        center = float(np.nanmean(y_last) + (offset * scale * (n - 1)))
+        pad = max(_rough_edge_jump(y_last), offset * scale) * 1.2
+        ymax = center + pad
+        if not np.isfinite(ymin):
+            ymin = 0.0
+        if not np.isfinite(ymax) or ymax <= ymin:
+            ymax = ymin + max(pad, 1.0)
+        return [ymin, ymax]
+
+    # ---- Col 2: Averaged lines (stacked with vertical offset) ---------------
+    avg_raw: list[np.ndarray] = []
+    avg_trace_indices: list[int] = []
+    avg_frame_labels: list[int] = []
+    avg_offset0 = 1.0
+    if n_avg_disp > 0:
+        colors = plotly.colors.sample_colorscale(cmap_name, np.linspace(0, 1, n_avg_disp))
         px_arr = np.arange(x1, col_end)
-        step_ticks = max(1, num_groups // 10)
-        for gi in range(num_groups):
+        avg_raw = [np.asarray(specs_avg[gi, x1:col_end], dtype=float) for gi in avg_idx]
+        avg_offset0 = _default_offset(avg_raw)
+        for rank, gi in enumerate(avg_idx):
             frame_label = chunk_start + gi * aver_n
+            avg_frame_labels.append(int(frame_label))
             fig.add_trace(
                 go.Scattergl(
                     x=px_arr,
-                    y=specs_avg[gi, x1:col_end] + gi,
+                    y=avg_raw[rank] + avg_offset0 * rank,
                     mode="lines",
-                    name=f"Frame {frame_label}",
-                    line=dict(width=1, color=colors[gi]),
+                    name=f"Avg@{frame_label}",
+                    line=dict(width=1, color=colors[rank]),
+                    opacity=0.7,
                     hovertemplate=(
-                        "Frame " + str(frame_label) + "<br>"
+                        "Avg start frame " + str(frame_label) + "<br>"
                         "Pixel: %{x}<br>"
-                        "Intensity: %{customdata:.3f}<extra></extra>"
+                        "Intensity: %{y:.3f}<extra></extra>"
                     ),
-                    customdata=specs_avg[gi, x1:col_end],
+                    customdata=avg_raw[rank],
                     showlegend=False,
                 ),
                 row=1, col=2,
             )
-        fig.update_yaxes(
-            tickmode="array",
-            tickvals=list(range(0, num_groups, step_ticks)),
-            ticktext=[
-                str(chunk_start + gi * aver_n)
-                for gi in range(0, num_groups, step_ticks)
-            ],
-            row=1, col=2,
-        )
+            avg_trace_indices.append(len(fig.data) - 1)
 
-    # ---- Col 3: Individual frames ------------------------------------------
+    # ---- Col 3: Individual frames (stacked with vertical offset) ------------
+    frame_raw: list[np.ndarray] = []
+    frame_trace_indices: list[int] = []
+    frame_trace_labels: list[int] = []
+    frame_offset0 = 1.0
     if n_disp > 0:
-        colors_noavg = plotly.colors.sample_colorscale(
-            cmap_name, np.linspace(0, 1, n_disp)
-        )
+        colors_noavg = plotly.colors.sample_colorscale(cmap_name, np.linspace(0, 1, n_disp))
         px_arr = np.arange(x1, col_end)
-        step_ticks_noavg = max(1, n_frames // 10)
+        frame_raw = [np.asarray(per_frame_specs[i, x1:col_end], dtype=float) for i in disp_idx]
+        frame_offset0 = _default_offset(frame_raw)
         for rank, i in enumerate(disp_idx):
             frame_label = chunk_start + i
+            frame_trace_labels.append(int(frame_label))
             fig.add_trace(
                 go.Scattergl(
                     x=px_arr,
-                    y=per_frame_specs[i, x1:col_end] + i,
+                    y=frame_raw[rank] + frame_offset0 * rank,
                     mode="lines",
                     name=f"Frame {frame_label}",
                     line=dict(width=0.8, color=colors_noavg[rank]),
+                    opacity=0.45,
                     hovertemplate=(
                         "Frame " + str(frame_label) + "<br>"
                         "Pixel: %{x}<br>"
-                        "Intensity: %{customdata:.3f}<extra></extra>"
+                        "Intensity: %{y:.3f}<extra></extra>"
                     ),
-                    customdata=per_frame_specs[i, x1:col_end],
+                    customdata=frame_raw[rank],
                     showlegend=False,
                 ),
                 row=1, col=3,
             )
-        fig.update_yaxes(
-            tickmode="array",
-            tickvals=list(range(0, n_frames, step_ticks_noavg)),
-            ticktext=[
-                str(chunk_start + i)
-                for i in range(0, n_frames, step_ticks_noavg)
-            ],
-            row=1, col=3,
+            frame_trace_indices.append(len(fig.data) - 1)
+
+    # Interactive offset scaling for both stacked line panels.
+    # 1x is default; other levels help with crowded/sparse regions.
+    scale_vals = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0]
+    if avg_trace_indices or frame_trace_indices:
+        def _stack_with_scale(lines: list[np.ndarray], base: float, scale: float) -> list[list[float]]:
+            return [(y + (base * scale * k)).tolist() for k, y in enumerate(lines)]
+
+        steps = []
+        all_indices = avg_trace_indices + frame_trace_indices
+        for sc in scale_vals:
+            ys = _stack_with_scale(avg_raw, avg_offset0, sc) + _stack_with_scale(frame_raw, frame_offset0, sc)
+            r2 = _stacked_range(avg_raw, avg_offset0, sc)
+            r3 = _stacked_range(frame_raw, frame_offset0, sc)
+            steps.append(
+                dict(
+                    label=f"{sc:g}x",
+                    method="update",
+                    args=[
+                        {"y": ys},
+                        {"yaxis2.range": r2, "yaxis3.range": r3},
+                        all_indices,
+                    ],
+                )
+            )
+        fig.update_layout(
+            sliders=[
+                dict(
+                    active=2,  # default 1.0x
+                    x=0.18,
+                    y=-0.12,
+                    len=0.62,
+                    xanchor="left",
+                    currentvalue=dict(prefix="Line offset: "),
+                    pad=dict(t=0, b=0),
+                    steps=steps,
+                )
+            ]
         )
+        fig.update_yaxes(range=_stacked_range(avg_raw, avg_offset0, 1.0), row=1, col=2)
+        fig.update_yaxes(range=_stacked_range(frame_raw, frame_offset0, 1.0), row=1, col=3)
 
     # ---- Global layout -----------------------------------------------------
     fig.update_layout(
@@ -518,27 +625,180 @@ def _save_html_chunk(
             y=0.99, yanchor="top",
         ),
         height=1000,
-        width=1150,
+        autosize=True,
         font=dict(size=11),
         showlegend=False,
         dragmode="zoom",
         hoverlabel=dict(bgcolor="white", font_size=11),
-        margin=dict(t=150, b=60, l=70, r=70),
+        margin=dict(t=150, b=130, l=70, r=70),
     )
 
     # Axis labels — x and y on every panel
     for col in (1, 2, 3):
         fig.update_xaxes(title_text="Pixel column", row=1, col=col)
     fig.update_yaxes(title_text="Frame index", row=1, col=1)
-    fig.update_yaxes(title_text="Frame index", row=1, col=2)
-    fig.update_yaxes(title_text="Frame index", row=1, col=3)
+    fig.update_yaxes(title_text="Offset normalized intensity (a.u.)", row=1, col=2)
+    fig.update_yaxes(title_text="Offset normalized intensity (a.u.)", row=1, col=3)
 
     # ---- Save --------------------------------------------------------------
     path_preview = os.path.join(
         save_dir,
         f"preview_{chunk_start:05d}-{chunk_end:05d}_N{n_frames}.html",
     )
-    fig.write_html(path_preview, include_plotlyjs="cdn")
+    plot_div_id = "dxas_preview_plot"
+    fig_json = fig.to_json()
+    x_lo_default = int(x1)
+    x_hi_default = int(max(x1, col_end - 1))
+    f_lo_default = int(chunk_start)
+    f_hi_default = int(max(chunk_start, chunk_end - 1))
+
+    page = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>DXAS Preview</title>
+  <script src="https://cdn.plot.ly/plotly-3.3.1.min.js"></script>
+  <style>
+    body {{ margin: 0; font-family: Arial, sans-serif; }}
+    #wrap {{ padding: 10px 12px 12px 12px; }}
+    #controls {{
+      margin-top: 12px;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 10px;
+    }}
+    .ctrl {{
+      border: 1px solid #d0d7de;
+      border-radius: 8px;
+      padding: 10px;
+      background: #fafbfc;
+    }}
+    .ctrl h4 {{ margin: 0 0 8px 0; font-size: 14px; }}
+    .row {{ display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }}
+    label {{ font-size: 12px; color: #444; }}
+    input {{ width: 92px; padding: 4px 6px; font-size: 12px; }}
+    button {{ padding: 4px 8px; font-size: 12px; cursor: pointer; }}
+    .hint {{ font-size: 11px; color: #666; margin-top: 6px; }}
+  </style>
+</head>
+<body>
+  <div id="wrap">
+    <div id="{plot_div_id}" style="width:100%;"></div>
+    <div id="controls">
+      <div class="ctrl">
+        <h4>X ranges (all 3 plots)</h4>
+        <div class="row">
+          <label for="x_min">X min</label><input id="x_min" type="number" step="1">
+          <label for="x_max">X max</label><input id="x_max" type="number" step="1">
+          <button id="apply_x">Apply</button>
+          <button id="reset_x">Reset</button>
+        </div>
+      </div>
+      <div class="ctrl">
+        <h4>Frame ranges</h4>
+        <div class="row">
+          <label for="f_min">Frame min</label><input id="f_min" type="number" step="1">
+          <label for="f_max">Frame max</label><input id="f_max" type="number" step="1">
+          <button id="apply_f">Apply</button>
+          <button id="reset_f">Reset</button>
+        </div>
+        <div class="hint">Heatmap Y-range is zoomed; line traces outside range are hidden.</div>
+      </div>
+    </div>
+  </div>
+  <script>
+    const fig = {fig_json};
+    const avgTraceIdx = {json.dumps(avg_trace_indices)};
+    const avgFrameLabels = {json.dumps(avg_frame_labels)};
+    const frameTraceIdx = {json.dumps(frame_trace_indices)};
+    const frameLabels = {json.dumps(frame_trace_labels)};
+    const xDefault = [{x_lo_default}, {x_hi_default}];
+    const fDefault = [{f_lo_default}, {f_hi_default}];
+
+    const gd = document.getElementById("{plot_div_id}");
+    const xMinEl = document.getElementById("x_min");
+    const xMaxEl = document.getElementById("x_max");
+    const fMinEl = document.getElementById("f_min");
+    const fMaxEl = document.getElementById("f_max");
+
+    function setDefaults() {{
+      xMinEl.value = xDefault[0];
+      xMaxEl.value = xDefault[1];
+      fMinEl.value = fDefault[0];
+      fMaxEl.value = fDefault[1];
+    }}
+
+    function applyXRange() {{
+      const a = Number(xMinEl.value);
+      const b = Number(xMaxEl.value);
+      if (!Number.isFinite(a) || !Number.isFinite(b)) return;
+      const lo = Math.min(a, b);
+      const hi = Math.max(a, b);
+      Plotly.relayout(gd, {{
+        "xaxis.range": [lo, hi],
+        "xaxis2.range": [lo, hi],
+        "xaxis3.range": [lo, hi]
+      }});
+    }}
+
+    function applyFrameRange() {{
+      const a = Number(fMinEl.value);
+      const b = Number(fMaxEl.value);
+      if (!Number.isFinite(a) || !Number.isFinite(b)) return;
+      const lo = Math.min(a, b);
+      const hi = Math.max(a, b);
+
+      // Heatmap frame zoom.
+      Plotly.relayout(gd, {{"yaxis.range": [lo, hi]}});
+
+      // Hide traces outside selected frame window.
+      let avgVis = [];
+      let frameVis = [];
+      const ops = [];
+      if (avgTraceIdx.length > 0) {{
+        avgVis = avgFrameLabels.map((f) => (f >= lo && f <= hi));
+        ops.push(Plotly.restyle(gd, {{"visible": avgVis}}, avgTraceIdx));
+      }}
+      if (frameTraceIdx.length > 0) {{
+        frameVis = frameLabels.map((f) => (f >= lo && f <= hi));
+        ops.push(Plotly.restyle(gd, {{"visible": frameVis}}, frameTraceIdx));
+      }}
+
+      // After visibility updates, autoscale y for line panels so selected
+      // spectra fill each panel vertically.
+      Promise.all(ops).then(() => {{
+        const relayout = {{}};
+        if (avgVis.some(Boolean)) relayout["yaxis2.autorange"] = true;
+        if (frameVis.some(Boolean)) relayout["yaxis3.autorange"] = true;
+        if (Object.keys(relayout).length > 0) {{
+          Plotly.relayout(gd, relayout);
+        }}
+      }});
+    }}
+
+    Plotly.newPlot(gd, fig.data, fig.layout, {{responsive: true, displaylogo: false}}).then(() => {{
+      setDefaults();
+      applyFrameRange();
+      document.getElementById("apply_x").addEventListener("click", applyXRange);
+      document.getElementById("reset_x").addEventListener("click", () => {{
+        xMinEl.value = xDefault[0];
+        xMaxEl.value = xDefault[1];
+        applyXRange();
+      }});
+      document.getElementById("apply_f").addEventListener("click", applyFrameRange);
+      document.getElementById("reset_f").addEventListener("click", () => {{
+        fMinEl.value = fDefault[0];
+        fMaxEl.value = fDefault[1];
+        applyFrameRange();
+      }});
+    }});
+  </script>
+</body>
+</html>
+"""
+    with open(path_preview, "w", encoding="utf-8") as f:
+      f.write(page)
     saved = [path_preview]
     if display_inline:
         fig.show()
