@@ -4,6 +4,7 @@ Prefer `import Dispersive_XAS as dxas` for new code.
 """
 
 from .core.analysis import XAS_spec, spec_average
+from .batch import AnalysisConfig, BatchAnalysisConfig, run_analysis, run_large_quantity_analysis
 from .core.batch import (
     apply_calibration_to_scan,
     calibrate_from_reference_foil,

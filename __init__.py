@@ -6,8 +6,10 @@ Architecture:
 """
 
 from . import core
+from . import batch
 from . import web
 from . import visualization
+from .batch import AnalysisConfig, BatchAnalysisConfig, run_analysis, run_large_quantity_analysis
 from .core import (
     EDXAS_Calibrate,
     XAS_spec,
@@ -72,7 +74,7 @@ from .core.utils import (
 )
 from .visualization import PgSpec, show_roi
 from .web import (
-    batch as batch,
+    batch as web_batch,
     plot_spectra_in_chunks,
     preview_spectra_html,
     select_rect_roi,
@@ -90,11 +92,12 @@ __version__ = "0.3.0"
 
 __all__ = [
     "core",
+    "batch",
     "web",
+    "web_batch",
     "visualization",
     "crystal",
     "analysis",
-    "batch",
     "core_batch",
     "h5io",
     "image_processing",
@@ -104,6 +107,10 @@ __all__ = [
     "utils",
     "data_io",
     "io",
+    "BatchAnalysisConfig",
+    "AnalysisConfig",
+    "run_large_quantity_analysis",
+    "run_analysis",
     "XAS_spec",
     "spec_average",
     "norm_spec_preview",
