@@ -28,6 +28,7 @@ except Exception:  # noqa: BLE001
 
 import h5py
 
+from ..progress import BatchProgressReporter, emit_progress
 from ..core.batch import (
     apply_calibration_to_scan,
     calibrate_from_reference_foil,
@@ -814,73 +815,94 @@ def _write_summary_dashboard(
     return str(out_path)
 
 
-def run_large_quantity_analysis(cfg: BatchAnalysisConfig, make_previews: bool = True) -> dict:
+def run_large_quantity_analysis(
+    cfg: BatchAnalysisConfig,
+    make_previews: bool = True,
+    progress: BatchProgressReporter | None = None,
+) -> dict:
     """Run the full large-quantity analysis and export interactive outputs."""
     data_dir = cfg.data_dir.resolve()
     scan_path = _resolve_scan(cfg.scan_file, data_dir, include_kw="SHUANG_CuO_start")
     analysis_dir = data_dir / f"{cfg.analysis_dirname}_{scan_path.stem}"
     analysis_dir.mkdir(parents=True, exist_ok=True)
-
-    reverse_path = None
-    if cfg.use_reverse_scan:
-        try:
-            reverse_path = _resolve_scan(cfg.reverse_scan_file, data_dir, include_kw="SHUANG_CuO_stop")
-        except Exception as exc:  # noqa: BLE001
-            print(f"[warning] Reverse scan not found, skip reverse analysis: {exc}")
-            reverse_path = None
-
-    foil_path = _resolve_foil(cfg.foil_file, data_dir)
-    scan_flat = Path(find_nearest_flatfield(str(scan_path), folder=str(data_dir)))
-    foil_flat = Path(find_nearest_flatfield(str(foil_path), folder=str(data_dir)))
-    reverse_flat = (
-        Path(find_nearest_flatfield(str(reverse_path), folder=str(data_dir)))
-        if reverse_path is not None
-        else None
+    progress_path = (
+        analysis_dir / cfg.progress_json_name if getattr(cfg, "progress_json_name", None) else None
+    )
+    progress = progress or BatchProgressReporter(
+        json_path=progress_path,
+        enabled=getattr(cfg, "show_progress", True),
+    )
+    progress.set_context(
+        workflow="run_large_quantity_analysis",
+        analysis_dir=str(analysis_dir),
+        scan_path=str(scan_path),
+        progress_json=None if progress_path is None else str(progress_path),
     )
 
-    print(f"Scan      : {scan_path.name}")
-    print(f"Scan flat : {scan_flat.name}")
-    if reverse_path is not None:
-        print(f"Reverse   : {reverse_path.name}")
-        print(f"Rev flat  : {reverse_flat.name}")
-    print(f"Cu foil   : {foil_path.name}")
-    print(f"Foil flat : {foil_flat.name}")
+    try:
+        reverse_path = None
+        if cfg.use_reverse_scan:
+            try:
+                reverse_path = _resolve_scan(cfg.reverse_scan_file, data_dir, include_kw="SHUANG_CuO_stop")
+            except Exception as exc:  # noqa: BLE001
+                print(f"[warning] Reverse scan not found, skip reverse analysis: {exc}")
+                reverse_path = None
 
-    main_preview = {"files": [], "primary": None}
-    reverse_preview = {"files": [], "primary": None}
+        foil_path = _resolve_foil(cfg.foil_file, data_dir)
+        scan_flat = Path(find_nearest_flatfield(str(scan_path), folder=str(data_dir)))
+        foil_flat = Path(find_nearest_flatfield(str(foil_path), folder=str(data_dir)))
+        reverse_flat = (
+            Path(find_nearest_flatfield(str(reverse_path), folder=str(data_dir)))
+            if reverse_path is not None
+            else None
+        )
 
-    if make_previews:
-        plot_spectra_in_chunks(
-            data_path=str(scan_path),
-            flat_path=str(scan_flat),
-            aver_n=5,
-            flat_range=cfg.row_range,
-            norm_x1=cfg.norm_range_pixels[0],
-            norm_x2=cfg.norm_range_pixels[1],
-            x1=cfg.norm_range_pixels[0],
-            x2=400,
-            chunk_size=cfg.preview_chunk_size,
-            cmap_name="magma",
-            output_format="html",
-            display_inline=False,
-            median_size=cfg.preview_median_size,
+        emit_progress(
+            progress,
+            "setup",
+            status="completed",
+            message="Resolved input scan, flatfield, and foil paths",
+            extra={
+                "scan_flat": str(scan_flat),
+                "foil_path": str(foil_path),
+                "foil_flat": str(foil_flat),
+                "reverse_scan_path": None if reverse_path is None else str(reverse_path),
+                "reverse_scan_flat": None if reverse_flat is None else str(reverse_flat),
+            },
         )
-        preview_spectra_html(
-            data_path=str(scan_path),
-            flat_path=str(scan_flat),
-            aver_n=5,
-            flat_range=cfg.row_range,
-            norm_x1=cfg.norm_range_pixels[0],
-            norm_x2=cfg.norm_range_pixels[1],
-            chunk_size=cfg.preview_chunk_size,
-            cmap_name="magma",
-            display_inline=False,
-            median_size=cfg.preview_median_size,
-        )
+
+        print(f"Scan      : {scan_path.name}")
+        print(f"Scan flat : {scan_flat.name}")
         if reverse_path is not None:
+            print(f"Reverse   : {reverse_path.name}")
+            print(f"Rev flat  : {reverse_flat.name}")
+        print(f"Cu foil   : {foil_path.name}")
+        print(f"Foil flat : {foil_flat.name}")
+
+        main_preview = {"files": [], "primary": None}
+        reverse_preview = {"files": [], "primary": None}
+
+        if make_previews:
+            plot_spectra_in_chunks(
+                data_path=str(scan_path),
+                flat_path=str(scan_flat),
+                aver_n=5,
+                flat_range=cfg.row_range,
+                norm_x1=cfg.norm_range_pixels[0],
+                norm_x2=cfg.norm_range_pixels[1],
+                x1=cfg.norm_range_pixels[0],
+                x2=400,
+                chunk_size=cfg.preview_chunk_size,
+                cmap_name="magma",
+                output_format="html",
+                display_inline=False,
+                median_size=cfg.preview_median_size,
+                progress=progress,
+                progress_stage="forward_preview_chunks",
+            )
             preview_spectra_html(
-                data_path=str(reverse_path),
-                flat_path=str(reverse_flat),
+                data_path=str(scan_path),
+                flat_path=str(scan_flat),
                 aver_n=5,
                 flat_range=cfg.row_range,
                 norm_x1=cfg.norm_range_pixels[0],
@@ -889,189 +911,319 @@ def run_large_quantity_analysis(cfg: BatchAnalysisConfig, make_previews: bool = 
                 cmap_name="magma",
                 display_inline=False,
                 median_size=cfg.preview_median_size,
+                progress=progress,
+                progress_stage="forward_preview_full",
             )
+            if reverse_path is not None:
+                preview_spectra_html(
+                    data_path=str(reverse_path),
+                    flat_path=str(reverse_flat),
+                    aver_n=5,
+                    flat_range=cfg.row_range,
+                    norm_x1=cfg.norm_range_pixels[0],
+                    norm_x2=cfg.norm_range_pixels[1],
+                    chunk_size=cfg.preview_chunk_size,
+                    cmap_name="magma",
+                    display_inline=False,
+                    median_size=cfg.preview_median_size,
+                    progress=progress,
+                    progress_stage="reverse_preview_full",
+                )
 
-    main_preview = _stage_preview_html(scan_path, analysis_dir, "forward")
-    if reverse_path is not None:
-        reverse_preview = _stage_preview_html(reverse_path, analysis_dir, "reverse")
-    if not main_preview["primary"]:
-        preview_spectra_html(
-            data_path=str(scan_path),
-            flat_path=str(scan_flat),
-            aver_n=5,
-            flat_range=cfg.row_range,
-            norm_x1=cfg.norm_range_pixels[0],
-            norm_x2=cfg.norm_range_pixels[1],
-            chunk_size=cfg.preview_chunk_size,
-            cmap_name="magma",
-            display_inline=False,
-            median_size=cfg.preview_median_size,
-        )
         main_preview = _stage_preview_html(scan_path, analysis_dir, "forward")
-    if main_preview["primary"]:
-        print(f"[main] 10k viewer        : {main_preview['primary']}")
-    if reverse_preview["primary"]:
-        print(f"[reverse] 10k viewer     : {reverse_preview['primary']}")
-
-    if not cfg.cu_standard.exists():
-        raise FileNotFoundError(f"Cu standard not found: {cfg.cu_standard}")
-    cu_standard = spec_shaper(np.loadtxt(cfg.cu_standard, usecols=(0, 1)))
-
-    fit, meta = calibrate_from_reference_foil(
-        foil_path=str(foil_path),
-        flat_path=str(foil_flat),
-        standard_spec=cu_standard,
-        row_range=cfg.row_range,
-        denoise_size=3,
-        median_size=3,
-        gaussian_sigma=0.2,
-        norm_range_pixels=cfg.norm_range_pixels,
-        interp_pts=1000,
-        y_points=(0.2, 0.7),
-        exp_edge_range_pixels=(0, 220),
-        exp_peak_range_pixels=(100, 700),
-        peak_n=8,
-        peak_prominence=0.01,
-        standard_norm_range_eV=(8950, 9050),
-        standard_edge_range_eV=(8920, 9020),
-        standard_peak_range_eV=(8950, 9300),
-        poly_order=2,
-        show=False,
-        save_param=False,
-    )
-
-    model_name = f"calibration_{foil_path.stem}.json"
-    model_path = data_dir / model_name
-    if cfg.overwrite or (not model_path.exists()):
-        save_calibration_model(str(model_path), fit, metadata=meta)
-    model = load_calibration_model(str(model_path))
-    print(f"Calibration RMSE (eV): {fit.rmse:.6f}")
-    print(f"Calibration model     : {model_path}")
-    foil_calibration = _write_foil_calibration_report(
-        out_dir=analysis_dir,
-        fit=fit,
-        meta=meta,
-        foil_path=foil_path,
-        model_path=model_path,
-    )
-    print(f"Foil calibration report: {foil_calibration['html']}")
-
-    def _apply_one(tag: str, data_path: Path, flat_path: Path) -> Path:
-        out_name = f"calibrated_{data_path.stem}.h5"
-        out_path = data_dir / out_name
-        if cfg.overwrite or (not out_path.exists()):
-            batch = apply_calibration_to_scan(
-                data_path=str(data_path),
-                flat_path=str(flat_path),
-                calibration=model,
-                row_range=cfg.row_range,
-                norm_range_pixels=cfg.norm_range_pixels,
-                denoise_size=3,
-                median_size=3,
-                gaussian_sigma=0.2,
-                chunk_size=cfg.chunk_size,
-                output_h5=str(out_path),
+        if reverse_path is not None:
+            reverse_preview = _stage_preview_html(reverse_path, analysis_dir, "reverse")
+        if not main_preview["primary"]:
+            preview_spectra_html(
+                data_path=str(scan_path),
+                flat_path=str(scan_flat),
+                aver_n=5,
+                flat_range=cfg.row_range,
+                norm_x1=cfg.norm_range_pixels[0],
+                norm_x2=cfg.norm_range_pixels[1],
+                chunk_size=cfg.preview_chunk_size,
+                cmap_name="magma",
+                display_inline=False,
+                median_size=cfg.preview_median_size,
+                progress=progress,
+                progress_stage="forward_preview_full",
             )
-            print(f"[{tag}] Calibrated spectra H5 : {batch['output_h5']}")
-            print(f"[{tag}] Frames processed      : {batch['n_frames']}")
-        else:
-            print(f"[{tag}] Reusing existing calibrated file: {out_path}")
-        return out_path
+            main_preview = _stage_preview_html(scan_path, analysis_dir, "forward")
+        if main_preview["primary"]:
+            print(f"[main] 10k viewer        : {main_preview['primary']}")
+        if reverse_preview["primary"]:
+            print(f"[reverse] 10k viewer     : {reverse_preview['primary']}")
 
-    forward_h5 = _apply_one("forward", scan_path, scan_flat)
-    reverse_h5 = _apply_one("reverse", reverse_path, reverse_flat) if reverse_path is not None else None
+        if not cfg.cu_standard.exists():
+            raise FileNotFoundError(f"Cu standard not found: {cfg.cu_standard}")
+        cu_standard = spec_shaper(np.loadtxt(cfg.cu_standard, usecols=(0, 1)))
 
-    forward_result = _analyze_calibrated_file(
-        calibrated_h5=forward_h5,
-        out_dir=analysis_dir,
-        tag="forward",
-        spectral_window=cfg.spectral_savgol_window,
-        spectral_poly=cfg.spectral_savgol_poly,
-        temporal_window=cfg.temporal_smooth_window,
-        peak_a_ev=cfg.peak_a_ev,
-        peak_b_ev=cfg.peak_b_ev,
-        peak_search_range=cfg.peak_search_range,
-        peak_halfwidth_eV=cfg.peak_halfwidth_eV,
-        ref_average_frames=cfg.ref_average_frames,
-        max_heatmap_frames=cfg.max_heatmap_frames,
-    )
-    print(f"[forward] Peak A/B centers: {forward_result['peak_a_eV']:.3f}, {forward_result['peak_b_eV']:.3f} eV")
-    print(f"[forward] Difference map   : {forward_result['difference_map_html']}")
-    print(f"[forward] Summary plot    : {forward_result['summary_html']}")
+        emit_progress(
+            progress,
+            "foil_calibration",
+            status="running",
+            message="Calibrating foil against the Cu reference standard",
+            extra={
+                "foil_path": str(foil_path),
+                "foil_flat": str(foil_flat),
+            },
+        )
+        fit, meta = calibrate_from_reference_foil(
+            foil_path=str(foil_path),
+            flat_path=str(foil_flat),
+            standard_spec=cu_standard,
+            row_range=cfg.row_range,
+            denoise_size=3,
+            median_size=3,
+            gaussian_sigma=0.2,
+            norm_range_pixels=cfg.norm_range_pixels,
+            interp_pts=1000,
+            y_points=(0.2, 0.7),
+            exp_edge_range_pixels=(0, 220),
+            exp_peak_range_pixels=(100, 700),
+            peak_n=8,
+            peak_prominence=0.01,
+            standard_norm_range_eV=(8950, 9050),
+            standard_edge_range_eV=(8920, 9020),
+            standard_peak_range_eV=(8950, 9300),
+            poly_order=2,
+            show=False,
+            save_param=False,
+        )
 
-    reverse_result = None
-    compare_html = None
-    if reverse_h5 is not None:
-        rev_peak_a = cfg.peak_a_ev if cfg.peak_a_ev is not None else float(forward_result["peak_a_eV"])
-        rev_peak_b = cfg.peak_b_ev if cfg.peak_b_ev is not None else float(forward_result["peak_b_eV"])
-        reverse_result = _analyze_calibrated_file(
-            calibrated_h5=reverse_h5,
+        model_name = f"calibration_{foil_path.stem}.json"
+        model_path = data_dir / model_name
+        if cfg.overwrite or (not model_path.exists()):
+            save_calibration_model(str(model_path), fit, metadata=meta)
+        model = load_calibration_model(str(model_path))
+        print(f"Calibration RMSE (eV): {fit.rmse:.6f}")
+        print(f"Calibration model     : {model_path}")
+        foil_calibration = _write_foil_calibration_report(
             out_dir=analysis_dir,
-            tag="reverse",
+            fit=fit,
+            meta=meta,
+            foil_path=foil_path,
+            model_path=model_path,
+        )
+        emit_progress(
+            progress,
+            "foil_calibration",
+            status="completed",
+            message="Foil calibration finished",
+            extra={
+                "rmse_eV": float(fit.rmse),
+                "model_path": str(model_path),
+                "report_html": foil_calibration["html"],
+            },
+        )
+        print(f"Foil calibration report: {foil_calibration['html']}")
+
+        def _apply_one(tag: str, data_path: Path, flat_path: Path) -> Path:
+            out_name = f"calibrated_{data_path.stem}.h5"
+            out_path = data_dir / out_name
+            stage_name = f"{tag}_scan_calibration"
+            if cfg.overwrite or (not out_path.exists()):
+                batch = apply_calibration_to_scan(
+                    data_path=str(data_path),
+                    flat_path=str(flat_path),
+                    calibration=model,
+                    row_range=cfg.row_range,
+                    norm_range_pixels=cfg.norm_range_pixels,
+                    denoise_size=3,
+                    median_size=3,
+                    gaussian_sigma=0.2,
+                    chunk_size=cfg.chunk_size,
+                    output_h5=str(out_path),
+                    progress=progress,
+                    progress_stage=stage_name,
+                )
+                print(f"[{tag}] Calibrated spectra H5 : {batch['output_h5']}")
+                print(f"[{tag}] Frames processed      : {batch['n_frames']}")
+            else:
+                emit_progress(
+                    progress,
+                    stage_name,
+                    status="completed",
+                    message=f"Reusing existing calibrated file for {tag}",
+                    extra={
+                        "output_h5": str(out_path),
+                        "data_path": str(data_path),
+                    },
+                )
+                print(f"[{tag}] Reusing existing calibrated file: {out_path}")
+            return out_path
+
+        forward_h5 = _apply_one("forward", scan_path, scan_flat)
+        reverse_h5 = _apply_one("reverse", reverse_path, reverse_flat) if reverse_path is not None else None
+
+        emit_progress(
+            progress,
+            "forward_analysis",
+            status="running",
+            message="Computing forward metrics and interactive plots",
+            extra={"calibrated_h5": str(forward_h5)},
+        )
+        forward_result = _analyze_calibrated_file(
+            calibrated_h5=forward_h5,
+            out_dir=analysis_dir,
+            tag="forward",
             spectral_window=cfg.spectral_savgol_window,
             spectral_poly=cfg.spectral_savgol_poly,
             temporal_window=cfg.temporal_smooth_window,
-            peak_a_ev=rev_peak_a,
-            peak_b_ev=rev_peak_b,
+            peak_a_ev=cfg.peak_a_ev,
+            peak_b_ev=cfg.peak_b_ev,
             peak_search_range=cfg.peak_search_range,
             peak_halfwidth_eV=cfg.peak_halfwidth_eV,
             ref_average_frames=cfg.ref_average_frames,
             max_heatmap_frames=cfg.max_heatmap_frames,
         )
-        compare_html = _write_forward_reverse_compare(forward_result, reverse_result, out_dir=analysis_dir)
-        print(f"[reverse] Peak A/B centers: {reverse_result['peak_a_eV']:.3f}, {reverse_result['peak_b_eV']:.3f} eV")
-        print(f"[compare] Forward/Reverse : {compare_html}")
+        emit_progress(
+            progress,
+            "forward_analysis",
+            status="completed",
+            message="Forward analysis finished",
+            extra={
+                "difference_map_html": forward_result["difference_map_html"],
+                "summary_html": forward_result["summary_html"],
+            },
+        )
+        print(f"[forward] Peak A/B centers: {forward_result['peak_a_eV']:.3f}, {forward_result['peak_b_eV']:.3f} eV")
+        print(f"[forward] Difference map   : {forward_result['difference_map_html']}")
+        print(f"[forward] Summary plot    : {forward_result['summary_html']}")
 
-    result = {
-        "scan_path": str(scan_path),
-        "scan_flat": str(scan_flat),
-        "reverse_scan_path": str(reverse_path) if reverse_path is not None else None,
-        "reverse_scan_flat": str(reverse_flat) if reverse_flat is not None else None,
-        "foil_path": str(foil_path),
-        "foil_flat": str(foil_flat),
-        "calibration_model": str(model_path),
-        "calibrated_forward_h5": str(forward_h5),
-        "calibrated_reverse_h5": str(reverse_h5) if reverse_h5 is not None else None,
-        "rmse": float(fit.rmse),
-        "calibration_order": int(getattr(fit, "order", len(np.asarray(fit.coef, dtype=float)) - 1)),
-        "calibration_n_feature_points": int(np.asarray(fit.train, dtype=float).size),
-        "foil_calibration_report_html": foil_calibration["html"],
-        "foil_calibration_report_json": foil_calibration["json"],
-        "analysis_dir": str(analysis_dir),
-        "forward_analysis": forward_result,
-        "reverse_analysis": reverse_result,
-        "forward_reverse_compare_html": compare_html,
-        "forward_preview_html_files": main_preview["files"],
-        "reverse_preview_html_files": reverse_preview["files"],
-        "forward_preview_primary_html": main_preview["primary"],
-        "reverse_preview_primary_html": reverse_preview["primary"],
-        "main_preview_primary_html": main_preview["primary"],
-    }
-    summary_dashboard = _write_summary_dashboard(
-        out_dir=analysis_dir,
-        forward=forward_result,
-        reverse=reverse_result,
-        compare_html=compare_html,
-        main_preview_html=main_preview["primary"],
-        foil_calibration=foil_calibration,
-        manifest=result,
-    )
-    result["summary_dashboard_html"] = summary_dashboard
-    with open(analysis_dir / "analysis_manifest.json", "w", encoding="utf-8") as f:
-        json.dump(result, f, indent=2)
+        reverse_result = None
+        compare_html = None
+        if reverse_h5 is not None:
+            rev_peak_a = cfg.peak_a_ev if cfg.peak_a_ev is not None else float(forward_result["peak_a_eV"])
+            rev_peak_b = cfg.peak_b_ev if cfg.peak_b_ev is not None else float(forward_result["peak_b_eV"])
+            emit_progress(
+                progress,
+                "reverse_analysis",
+                status="running",
+                message="Computing reverse metrics and interactive plots",
+                extra={"calibrated_h5": str(reverse_h5)},
+            )
+            reverse_result = _analyze_calibrated_file(
+                calibrated_h5=reverse_h5,
+                out_dir=analysis_dir,
+                tag="reverse",
+                spectral_window=cfg.spectral_savgol_window,
+                spectral_poly=cfg.spectral_savgol_poly,
+                temporal_window=cfg.temporal_smooth_window,
+                peak_a_ev=rev_peak_a,
+                peak_b_ev=rev_peak_b,
+                peak_search_range=cfg.peak_search_range,
+                peak_halfwidth_eV=cfg.peak_halfwidth_eV,
+                ref_average_frames=cfg.ref_average_frames,
+                max_heatmap_frames=cfg.max_heatmap_frames,
+            )
+            emit_progress(
+                progress,
+                "reverse_analysis",
+                status="completed",
+                message="Reverse analysis finished",
+                extra={
+                    "difference_map_html": reverse_result["difference_map_html"],
+                    "summary_html": reverse_result["summary_html"],
+                },
+            )
+            emit_progress(
+                progress,
+                "forward_reverse_compare",
+                status="running",
+                message="Building forward vs reverse comparison view",
+            )
+            compare_html = _write_forward_reverse_compare(forward_result, reverse_result, out_dir=analysis_dir)
+            emit_progress(
+                progress,
+                "forward_reverse_compare",
+                status="completed",
+                message="Forward vs reverse comparison ready",
+                extra={"compare_html": compare_html},
+            )
+            print(f"[reverse] Peak A/B centers: {reverse_result['peak_a_eV']:.3f}, {reverse_result['peak_b_eV']:.3f} eV")
+            print(f"[compare] Forward/Reverse : {compare_html}")
 
-    print("\nInteractive exploration tips:")
-    print(f"- Open one file to see everything: {summary_dashboard}")
-    if main_preview["primary"]:
-        print(f"- 10k spectra viewer (main): {main_preview['primary']}")
-    if reverse_preview["primary"]:
-        print(f"- 10k spectra viewer (reverse): {reverse_preview['primary']}")
-    print("- Box-select to zoom, double-click to reset, and use pan mode for navigation.")
-    print("- Use the Plotly toolbar to autoscale or download snapshots.")
-    print("- Quantitative traces are saved as *_timeseries.csv for your own custom analysis.")
-    return result
+        result = {
+            "scan_path": str(scan_path),
+            "scan_flat": str(scan_flat),
+            "reverse_scan_path": str(reverse_path) if reverse_path is not None else None,
+            "reverse_scan_flat": str(reverse_flat) if reverse_flat is not None else None,
+            "foil_path": str(foil_path),
+            "foil_flat": str(foil_flat),
+            "calibration_model": str(model_path),
+            "calibrated_forward_h5": str(forward_h5),
+            "calibrated_reverse_h5": str(reverse_h5) if reverse_h5 is not None else None,
+            "rmse": float(fit.rmse),
+            "calibration_order": int(getattr(fit, "order", len(np.asarray(fit.coef, dtype=float)) - 1)),
+            "calibration_n_feature_points": int(np.asarray(fit.train, dtype=float).size),
+            "foil_calibration_report_html": foil_calibration["html"],
+            "foil_calibration_report_json": foil_calibration["json"],
+            "analysis_dir": str(analysis_dir),
+            "progress_json": None if progress_path is None else str(progress_path),
+            "forward_analysis": forward_result,
+            "reverse_analysis": reverse_result,
+            "forward_reverse_compare_html": compare_html,
+            "forward_preview_html_files": main_preview["files"],
+            "reverse_preview_html_files": reverse_preview["files"],
+            "forward_preview_primary_html": main_preview["primary"],
+            "reverse_preview_primary_html": reverse_preview["primary"],
+            "main_preview_primary_html": main_preview["primary"],
+        }
+        emit_progress(
+            progress,
+            "summary_dashboard",
+            status="running",
+            message="Writing summary dashboard and manifest",
+        )
+        summary_dashboard = _write_summary_dashboard(
+            out_dir=analysis_dir,
+            forward=forward_result,
+            reverse=reverse_result,
+            compare_html=compare_html,
+            main_preview_html=main_preview["primary"],
+            foil_calibration=foil_calibration,
+            manifest=result,
+        )
+        result["summary_dashboard_html"] = summary_dashboard
+        with open(analysis_dir / "analysis_manifest.json", "w", encoding="utf-8") as f:
+            json.dump(result, f, indent=2)
+        emit_progress(
+            progress,
+            "summary_dashboard",
+            status="completed",
+            message="Analysis summary is ready",
+            extra={
+                "summary_dashboard_html": summary_dashboard,
+                "analysis_manifest": str(analysis_dir / "analysis_manifest.json"),
+            },
+        )
+
+        print("\nInteractive exploration tips:")
+        print(f"- Open one file to see everything: {summary_dashboard}")
+        if main_preview["primary"]:
+            print(f"- 10k spectra viewer (main): {main_preview['primary']}")
+        if reverse_preview["primary"]:
+            print(f"- 10k spectra viewer (reverse): {reverse_preview['primary']}")
+        print("- Box-select to zoom, double-click to reset, and use pan mode for navigation.")
+        print("- Use the Plotly toolbar to autoscale or download snapshots.")
+        print("- Quantitative traces are saved as *_timeseries.csv for your own custom analysis.")
+        return result
+    except Exception as exc:
+        emit_progress(
+            progress,
+            "analysis_failed",
+            status="failed",
+            message=f"{type(exc).__name__}: {exc}",
+            extra={"error_type": type(exc).__name__},
+        )
+        raise
 
 
 # Backward-compatible function name from the original script.
-def run_analysis(cfg: BatchAnalysisConfig, make_previews: bool = True) -> dict:
-    return run_large_quantity_analysis(cfg=cfg, make_previews=make_previews)
+def run_analysis(
+    cfg: BatchAnalysisConfig,
+    make_previews: bool = True,
+    progress: BatchProgressReporter | None = None,
+) -> dict:
+    return run_large_quantity_analysis(cfg=cfg, make_previews=make_previews, progress=progress)

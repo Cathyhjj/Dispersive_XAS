@@ -13,6 +13,7 @@ import h5py
 import numpy as np
 import scipy.ndimage as nd
 
+from ..progress import BatchProgressReporter, emit_progress
 from .analysis import XAS_spec
 from .calibration import EDXAS_Calibrate
 from .data_io import load_nexus_entry
@@ -308,6 +309,8 @@ def apply_calibration_to_scan(
     end_frame: Optional[int] = None,
     output_h5: Optional[str] = None,
     output_dtype: str = "float32",
+    progress: BatchProgressReporter | None = None,
+    progress_stage: str = "calibration_scan",
 ) -> dict:
     """Apply a saved calibration to all spectra in a large scan efficiently."""
     if isinstance(calibration, dict):
@@ -326,6 +329,7 @@ def apply_calibration_to_scan(
         start_frame = int(np.clip(start_frame, 0, n_total))
         end_frame = int(np.clip(end_frame, start_frame, n_total))
         n_frames = end_frame - start_frame
+        total_chunks = max(1, (n_frames + chunk_size - 1) // chunk_size) if n_frames > 0 else 0
 
         r0, r1 = sorted((int(row_range[0]), int(row_range[1])))
         r0 = int(np.clip(r0, 0, h))
@@ -361,8 +365,23 @@ def apply_calibration_to_scan(
             chunks = []
 
         try:
+            emit_progress(
+                progress,
+                progress_stage,
+                status="running",
+                current=0,
+                total=total_chunks,
+                unit="chunks",
+                message=f"Preparing calibration for {n_frames} frames",
+                extra={
+                    "data_path": os.path.abspath(data_path),
+                    "flat_path": os.path.abspath(flat_path),
+                    "output_h5": None if output_h5 is None else os.path.abspath(output_h5),
+                    "row_range": [r0, r1],
+                },
+            )
             out_i = 0
-            for s in range(start_frame, end_frame, chunk_size):
+            for chunk_index, s in enumerate(range(start_frame, end_frame, chunk_size), start=1):
                 e = min(s + chunk_size, end_frame)
                 data_chunk = np.asarray(dset[s:e, r0:r1, :], dtype=np.float64)
                 if denoise_size > 1:
@@ -388,10 +407,37 @@ def apply_calibration_to_scan(
                 else:
                     chunks.append(specs.astype(np.float64))
                 out_i += specs.shape[0]
-                print(f"Processed frames {s}:{e}")
+                emit_progress(
+                    progress,
+                    progress_stage,
+                    status="running",
+                    current=chunk_index,
+                    total=total_chunks,
+                    unit="chunks",
+                    message=f"Processed frames {s}:{e}",
+                    extra={
+                        "frame_start": int(s),
+                        "frame_end": int(e),
+                        "n_frames_written": int(out_i),
+                    },
+                )
         finally:
             if fout is not None:
                 fout.close()
+
+    emit_progress(
+        progress,
+        progress_stage,
+        status="completed",
+        current=total_chunks,
+        total=total_chunks,
+        unit="chunks",
+        message=f"Calibration finished for {n_frames} frames",
+        extra={
+            "data_path": os.path.abspath(data_path),
+            "output_h5": None if output_h5 is None else os.path.abspath(output_h5),
+        },
+    )
 
     out = {
         "energy": energy,

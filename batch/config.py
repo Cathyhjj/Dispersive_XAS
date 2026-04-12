@@ -33,6 +33,8 @@ class BatchAnalysisConfig:
     preview_median_size: int = 3
     analysis_dirname: str = "analysis_20260227"
     overwrite: bool = False
+    show_progress: bool = True
+    progress_json_name: str | None = "analysis_progress.json"
 
     # Smoothing and peak analysis
     spectral_savgol_window: int = 11

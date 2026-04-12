@@ -23,6 +23,8 @@ a Jupyter notebook cell (in addition to saving the HTML files).  This
 enables instant interactive zoom/pan without leaving the notebook.
 """
 
+from __future__ import annotations
+
 import json
 import os
 from typing import Optional, Tuple
@@ -30,6 +32,7 @@ from typing import Optional, Tuple
 import numpy as np
 import scipy.ndimage as ndi
 
+from ..progress import BatchProgressReporter, emit_progress
 from ..core.batch import norm_spec_preview
 from ..core.data_io import load_nexus_entry
 
@@ -130,6 +133,8 @@ def plot_spectra_in_chunks(
     max_line_traces: int = 200,
     display_inline: bool = False,
     median_size: int = 0,
+    progress: BatchProgressReporter | None = None,
+    progress_stage: str = "preview_chunk_export",
 ) -> None:
     """Generate and save batch preview plots for a large DXAS scan.
 
@@ -210,8 +215,24 @@ def plot_spectra_in_chunks(
         )
     do_html = True
     do_png = False
+    total_frames = max(0, end_frame - start_frame)
+    total_chunks = max(1, (total_frames + chunk_size - 1) // chunk_size) if total_frames > 0 else 0
 
-    for chunk_start in range(start_frame, end_frame, chunk_size):
+    emit_progress(
+        progress,
+        progress_stage,
+        status="running",
+        current=0,
+        total=total_chunks,
+        unit="chunks",
+        message=f"Starting chunk preview export for {total_frames} frames",
+        extra={
+            "data_path": os.path.abspath(data_path),
+            "save_dir": save_dir,
+        },
+    )
+
+    for chunk_index, chunk_start in enumerate(range(start_frame, end_frame, chunk_size), start=1):
         chunk_end = min(chunk_start + chunk_size, end_frame)
         per_frame_specs, specs_avg, n_frames, num_groups, W = _compute_chunk_specs(
             data, flat_avg, fr0, fr1,
@@ -234,7 +255,35 @@ def plot_spectra_in_chunks(
                 display_inline=display_inline,
             )
 
+        emit_progress(
+            progress,
+            progress_stage,
+            status="running",
+            current=chunk_index,
+            total=total_chunks,
+            unit="chunks",
+            message=f"Saved preview chunk {chunk_start}:{chunk_end}",
+            extra={
+                "frame_start": int(chunk_start),
+                "frame_end": int(chunk_end),
+                "saved_files": saved,
+            },
+        )
         print("Saved:\n" + "\n".join(f"  {p}" for p in saved))
+
+    emit_progress(
+        progress,
+        progress_stage,
+        status="completed",
+        current=total_chunks,
+        total=total_chunks,
+        unit="chunks",
+        message=f"Chunk preview export finished ({total_chunks} filesets)",
+        extra={
+            "data_path": os.path.abspath(data_path),
+            "save_dir": save_dir,
+        },
+    )
 
 
 def preview_spectra_html(
@@ -252,6 +301,8 @@ def preview_spectra_html(
     max_line_traces: int = 200,
     display_inline: bool = True,
     median_size: int = 0,
+    progress: BatchProgressReporter | None = None,
+    progress_stage: str = "preview_full_export",
 ) -> None:
     """Generate **three** interactive HTML plots covering **all frames**.
 
@@ -323,8 +374,24 @@ def preview_spectra_html(
     # Accumulate computed spectra across all chunks (raw images are NOT kept).
     all_per_frame: list = []
     all_avg: list = []
+    total_frames = max(0, end_frame - start_frame)
+    total_chunks = max(1, (total_frames + chunk_size - 1) // chunk_size) if total_frames > 0 else 0
 
-    for chunk_start in range(start_frame, end_frame, chunk_size):
+    emit_progress(
+        progress,
+        progress_stage,
+        status="running",
+        current=0,
+        total=total_chunks,
+        unit="chunks",
+        message=f"Starting full preview export for {total_frames} frames",
+        extra={
+            "data_path": os.path.abspath(data_path),
+            "save_dir": save_dir,
+        },
+    )
+
+    for chunk_index, chunk_start in enumerate(range(start_frame, end_frame, chunk_size), start=1):
         chunk_end = min(chunk_start + chunk_size, end_frame)
         per_frame_specs, specs_avg, n_frames, _num_groups, _W = _compute_chunk_specs(
             data, flat_avg, fr0, fr1,
@@ -337,10 +404,35 @@ def preview_spectra_html(
         all_per_frame.append(per_frame_specs)
         if len(specs_avg):
             all_avg.append(specs_avg)
-        print(f"  processed frames {chunk_start}–{chunk_end}")
+        emit_progress(
+            progress,
+            progress_stage,
+            status="running",
+            current=chunk_index,
+            total=total_chunks,
+            unit="chunks",
+            message=f"Processed frames {chunk_start}-{chunk_end}",
+            extra={
+                "frame_start": int(chunk_start),
+                "frame_end": int(chunk_end),
+            },
+        )
 
     if not all_per_frame:
         print("No frames processed.")
+        emit_progress(
+            progress,
+            progress_stage,
+            status="completed",
+            current=0,
+            total=total_chunks,
+            unit="chunks",
+            message="No frames processed",
+            extra={
+                "data_path": os.path.abspath(data_path),
+                "save_dir": save_dir,
+            },
+        )
         return
 
     all_per_frame = np.vstack(all_per_frame)   # (total_frames, W)
@@ -358,6 +450,20 @@ def preview_spectra_html(
         0, W, aver_n, cmap_name, factor,
         save_dir, data_path, max_line_traces,
         display_inline=display_inline,
+    )
+    emit_progress(
+        progress,
+        progress_stage,
+        status="completed",
+        current=total_chunks,
+        total=total_chunks,
+        unit="chunks",
+        message=f"Saved full preview HTML for {total_frames} frames",
+        extra={
+            "data_path": os.path.abspath(data_path),
+            "save_dir": save_dir,
+            "saved_files": saved,
+        },
     )
     print("Saved:\n" + "\n".join(f"  {p}" for p in saved))
 

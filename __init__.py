@@ -7,9 +7,11 @@ Architecture:
 
 from . import core
 from . import batch
+from . import progress
 from . import web
 from . import visualization
 from .batch import AnalysisConfig, BatchAnalysisConfig, run_analysis, run_large_quantity_analysis
+from .progress import BatchProgressReporter
 from .core import (
     EDXAS_Calibrate,
     XAS_spec,
@@ -93,6 +95,7 @@ __version__ = "0.3.0"
 __all__ = [
     "core",
     "batch",
+    "progress",
     "web",
     "web_batch",
     "visualization",
@@ -109,6 +112,7 @@ __all__ = [
     "io",
     "BatchAnalysisConfig",
     "AnalysisConfig",
+    "BatchProgressReporter",
     "run_large_quantity_analysis",
     "run_analysis",
     "XAS_spec",
