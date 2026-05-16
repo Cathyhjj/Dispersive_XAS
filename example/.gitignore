@@ -1,2 +1,12 @@
 data/
+output/
+outputs/
+analysis_*/
+preliminary_results_*/
+*.h5
+*.hdf5
+*.nxs
+*.html
+*.csv
+*.json
 .DS_Store

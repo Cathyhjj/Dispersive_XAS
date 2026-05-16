@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dispersive-xas"
+version = "0.3.0"
+description = "Dispersive X-ray absorption spectroscopy data loading, ROI, calibration, and batch analysis tools."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "h5py>=3.8",
+    "numpy>=1.23",
+    "scipy>=1.9",
+    "scikit-image>=0.20",
+]
+
+[project.optional-dependencies]
+notebook = [
+    "ipython",
+    "ipywidgets",
+    "plotly",
+]
+dev = [
+    "build",
+    "pytest",
+]
+
+[project.urls]
+Repository = "https://github.com/Cathyhjj/Dispersive_XAS"
+
+[tool.setuptools]
+packages = [
+    "Dispersive_XAS",
+    "Dispersive_XAS.batch",
+    "Dispersive_XAS.core",
+    "Dispersive_XAS.core.data_io",
+    "Dispersive_XAS.web",
+]
+package-dir = { "Dispersive_XAS" = "." }
+include-package-data = true
