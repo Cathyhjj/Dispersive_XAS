@@ -27,6 +27,7 @@ class BatchAnalysisConfig:
         / "CuFoil_new.0001.nor"
     )
     row_range: tuple[int, int] = (155, 235)
+    roi: dict | None = None
     norm_range_pixels: tuple[int, int] = (50, 130)
     chunk_size: int = 500
     preview_chunk_size: int = 1000

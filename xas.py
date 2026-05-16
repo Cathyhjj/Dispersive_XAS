@@ -27,6 +27,20 @@ from .core.data_io import (
 )
 from .core.image_processing import find_shifts, register_thresholding, stitch_scans
 from .core.preprocessing import pre_process, pre_process_scan, ximea_correction
+from .core.roi import (
+    build_roi_mask,
+    fit_tilted_band_roi,
+    infer_tilted_band_roi_from_paths,
+    load_roi_json,
+    make_tilted_band_roi,
+    normalize_roi_spec,
+    prepare_roi_weights,
+    roi_boundary_rows,
+    roi_row_bounds,
+    roi_weighted_column_mean,
+    save_roi_json,
+    tilted_band_controls_from_roi,
+)
 from .core.spectrum import (
     atten_slope_corr,
     find_edge_jump,
@@ -54,9 +68,11 @@ from .core.utils import (
 )
 from .visualization import PgSpec, show_roi
 from .web import (
+    TiltedBandROIEditor,
     plot_spectra_in_chunks,
     preview_spectra_html,
     select_rect_roi,
+    select_tilted_band_roi,
     show_image,
     show_image_stack,
     show_line,

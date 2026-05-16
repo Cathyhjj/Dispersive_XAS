@@ -18,6 +18,7 @@ from .analysis import XAS_spec
 from .calibration import EDXAS_Calibrate
 from .data_io import load_nexus_entry
 from .preprocessing import pre_process
+from .roi import build_roi_mask, normalize_roi_spec, prepare_roi_weights
 from .spectrum import find_edge_pnts, norm_spec, peak_finder, spec_shaper
 
 __all__ = [
@@ -123,21 +124,12 @@ def find_nearest_flatfield(
     return scored[0][1]
 
 
-def _build_row_mask(shape: tuple[int, int], row_range: tuple[int, int]) -> np.ndarray:
-    h, w = shape
-    r0, r1 = sorted((int(row_range[0]), int(row_range[1])))
-    r0 = int(np.clip(r0, 0, h))
-    r1 = int(np.clip(r1, 0, h))
-    m = np.zeros((h, w), dtype=bool)
-    m[r0:r1, :] = True
-    return m
-
-
 def calibrate_from_reference_foil(
     foil_path: str,
     flat_path: str,
     standard_spec: np.ndarray,
     row_range: tuple[int, int] = (155, 235),
+    roi: Optional[dict] = None,
     denoise_size: int = 3,
     median_size: int = 3,
     gaussian_sigma: float = 0.2,
@@ -167,7 +159,8 @@ def calibrate_from_reference_foil(
         prefix="",
     )
     mux = np.asarray(processed["mux"], dtype=float)
-    m = _build_row_mask(mux.shape, row_range=row_range)
+    roi_spec = normalize_roi_spec(mux.shape, row_range=row_range, roi=roi)
+    m = build_roi_mask(mux.shape, roi=roi_spec)
 
     xas = XAS_spec(mux, m=m)
     if median_size > 1:
@@ -235,7 +228,8 @@ def calibrate_from_reference_foil(
     meta = {
         "foil_path": os.path.abspath(foil_path),
         "flat_path": os.path.abspath(flat_path),
-        "row_range": [int(row_range[0]), int(row_range[1])],
+        "row_range": list(roi_spec.get("row_bounds", [])),
+        "roi": roi_spec,
         "norm_range_pixels": [int(norm_range_pixels[0]), int(norm_range_pixels[1])],
         "poly_order": int(poly_order),
         "rmse": float(fit.rmse),
@@ -300,6 +294,7 @@ def apply_calibration_to_scan(
     flat_path: str,
     calibration: EDXAS_Calibrate | dict | np.ndarray,
     row_range: tuple[int, int] = (155, 235),
+    roi: Optional[dict] = None,
     norm_range_pixels: Optional[tuple[int, int]] = (50, 130),
     denoise_size: int = 3,
     median_size: int = 3,
@@ -331,9 +326,12 @@ def apply_calibration_to_scan(
         n_frames = end_frame - start_frame
         total_chunks = max(1, (n_frames + chunk_size - 1) // chunk_size) if n_frames > 0 else 0
 
-        r0, r1 = sorted((int(row_range[0]), int(row_range[1])))
-        r0 = int(np.clip(r0, 0, h))
-        r1 = int(np.clip(r1, r0 + 1, h))
+        roi_spec, (r0, r1), row_weights, col_weight_sum = prepare_roi_weights(
+            (h, w),
+            row_range=row_range,
+            roi=roi,
+            dtype=np.float64,
+        )
 
         flat_avg = np.mean(fset[:, r0:r1, :], axis=0, dtype=np.float64)
         if denoise_size > 1:
@@ -378,6 +376,7 @@ def apply_calibration_to_scan(
                     "flat_path": os.path.abspath(flat_path),
                     "output_h5": None if output_h5 is None else os.path.abspath(output_h5),
                     "row_range": [r0, r1],
+                    "roi": roi_spec,
                 },
             )
             out_i = 0
@@ -398,7 +397,7 @@ def apply_calibration_to_scan(
                         mux, sigma=(0.0, float(gaussian_sigma), float(gaussian_sigma))
                     )
 
-                specs = np.mean(mux, axis=1)
+                specs = (mux * row_weights[None, :, :]).sum(axis=1) / col_weight_sum
                 specs = _normalize_spectra_chunk(specs, norm_range_pixels)
                 specs = np.nan_to_num(specs, nan=0.0, posinf=1.0, neginf=0.0)
 
@@ -444,6 +443,7 @@ def apply_calibration_to_scan(
         "coef": coef,
         "n_frames": n_frames,
         "row_range": (r0, r1),
+        "roi": roi_spec,
     }
     if output_h5 is not None:
         out["output_h5"] = os.path.abspath(output_h5)

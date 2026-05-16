@@ -5,12 +5,14 @@ Numerical processing lives in :mod:`Dispersive_XAS.core`.
 """
 
 from .plotting import show_image, show_image_stack, show_line, show_lines, show_mask_overlay
-from .roi import PgSpec, select_rect_roi, show_roi
+from .roi import PgSpec, TiltedBandROIEditor, select_rect_roi, select_tilted_band_roi, show_roi
 from .batch import plot_spectra_in_chunks, preview_spectra_html
 
 __all__ = [
     "PgSpec",
+    "TiltedBandROIEditor",
     "select_rect_roi",
+    "select_tilted_band_roi",
     "show_roi",
     "show_line",
     "show_lines",

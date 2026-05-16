@@ -26,6 +26,20 @@ from .data_io import (
 )
 from .image_processing import find_shifts, register_thresholding, stitch_scans
 from .preprocessing import pre_process, pre_process_scan, ximea_correction
+from .roi import (
+    build_roi_mask,
+    fit_tilted_band_roi,
+    infer_tilted_band_roi_from_paths,
+    load_roi_json,
+    make_tilted_band_roi,
+    normalize_roi_spec,
+    prepare_roi_weights,
+    roi_boundary_rows,
+    roi_row_bounds,
+    roi_weighted_column_mean,
+    save_roi_json,
+    tilted_band_controls_from_roi,
+)
 from .spectrum import (
     atten_slope_corr,
     find_edge_jump,
@@ -68,6 +82,18 @@ __all__ = [
     "pre_process",
     "pre_process_scan",
     "ximea_correction",
+    "normalize_roi_spec",
+    "build_roi_mask",
+    "prepare_roi_weights",
+    "roi_row_bounds",
+    "roi_boundary_rows",
+    "roi_weighted_column_mean",
+    "fit_tilted_band_roi",
+    "infer_tilted_band_roi_from_paths",
+    "make_tilted_band_roi",
+    "tilted_band_controls_from_roi",
+    "save_roi_json",
+    "load_roi_json",
     "atten_slope_corr",
     "find_edge_jump",
     "find_edge_pnts",

@@ -35,6 +35,7 @@ import scipy.ndimage as ndi
 from ..progress import BatchProgressReporter, emit_progress
 from ..core.batch import norm_spec_preview
 from ..core.data_io import load_nexus_entry
+from ..core.roi import prepare_roi_weights
 
 __all__ = [
     "norm_spec_preview",
@@ -44,11 +45,30 @@ __all__ = [
 _DEFAULT_FACTOR = 200.0
 
 
+def _clip_pixel_range(
+    pixel_range: Tuple[int, int] | None,
+    width: int,
+    name: str,
+) -> Tuple[int, int] | None:
+    if pixel_range is None:
+        return None
+    if len(pixel_range) != 2:
+        raise ValueError(f"{name} must be a 2-value pixel range, got {pixel_range!r}")
+    x1, x2 = sorted((int(pixel_range[0]), int(pixel_range[1])))
+    x1 = max(0, min(x1, int(width) - 1))
+    x2 = max(x1 + 1, min(x2, int(width)))
+    if x2 <= x1:
+        raise ValueError(f"{name} is empty after clipping to detector width {width}: {pixel_range!r}")
+    return x1, x2
+
+
 def _compute_chunk_specs(
     data: np.ndarray,
     flat_avg: np.ndarray,
-    fr0: int,
-    fr1: int,
+    row_start: int,
+    row_stop: int,
+    row_weights: np.ndarray,
+    col_weight_sum: np.ndarray,
     chunk_start: int,
     chunk_end: int,
     aver_n: int,
@@ -56,6 +76,8 @@ def _compute_chunk_specs(
     norm_x2: int,
     factor: float,
     median_size: int = 0,
+    pre_edge_norm_range: Tuple[int, int] | None = None,
+    post_edge_norm_range: Tuple[int, int] | None = None,
 ) -> Tuple[np.ndarray, np.ndarray, int, int, int]:
     """Compute per-frame and grouped-average spectra for one chunk.
 
@@ -72,6 +94,21 @@ def _compute_chunk_specs(
     def _normalize_specs_batch(specs: np.ndarray) -> np.ndarray:
         if specs.size == 0:
             return specs
+        width = int(specs.shape[1])
+        pre_range = _clip_pixel_range(pre_edge_norm_range, width, "pre_edge_norm_range")
+        post_range = _clip_pixel_range(post_edge_norm_range, width, "post_edge_norm_range")
+        if (pre_range is None) != (post_range is None):
+            raise ValueError(
+                "pre_edge_norm_range and post_edge_norm_range must be set together."
+            )
+        if pre_range is not None and post_range is not None:
+            pre_ref = specs[:, pre_range[0]:pre_range[1]]
+            post_ref = specs[:, post_range[0]:post_range[1]]
+            pre_level = np.mean(pre_ref, axis=1, keepdims=True)
+            post_level = np.mean(post_ref, axis=1, keepdims=True)
+            out = (specs - pre_level) / (post_level - pre_level + 1e-12)
+            out[~np.isfinite(out)] = 0.0
+            return out
         x1 = max(0, min(int(norm_x1), specs.shape[1] - 1))
         x2 = max(x1 + 1, min(int(norm_x2), specs.shape[1]))
         ref = specs[:, x1:x2]
@@ -86,7 +123,7 @@ def _compute_chunk_specs(
         return np.empty((0, 0)), np.empty((0, 0)), 0, 0, 0
 
     # Vectorized chunk processing for speed.
-    chunk = np.asarray(data[chunk_start:chunk_end, fr0:fr1, :], dtype=np.float32)
+    chunk = np.asarray(data[chunk_start:chunk_end, row_start:row_stop, :], dtype=np.float32)
     if int(median_size) > 1:
         k = int(median_size)
         if k % 2 == 0:
@@ -98,17 +135,21 @@ def _compute_chunk_specs(
     with np.errstate(divide="ignore", invalid="ignore"):
         mux = np.log(flat2d[None, :, :] / chunk)
     mux[~np.isfinite(mux)] = 0.0
-    per_frame_specs = _normalize_specs_batch(np.mean(mux, axis=1))
+    per_frame_specs = _normalize_specs_batch(
+        (mux * row_weights[None, :, :]).sum(axis=1) / col_weight_sum
+    )
 
     W = int(per_frame_specs.shape[1])
     num_groups = int(n_frames // aver_n) if aver_n > 0 else 0
     if num_groups > 0:
         usable = chunk[: num_groups * aver_n]
-        grouped = usable.reshape(num_groups, int(aver_n), fr1 - fr0, W).mean(axis=1)
+        grouped = usable.reshape(num_groups, int(aver_n), row_stop - row_start, W).mean(axis=1)
         with np.errstate(divide="ignore", invalid="ignore"):
             gmux = np.log(flat2d[None, :, :] / grouped)
         gmux[~np.isfinite(gmux)] = 0.0
-        specs_avg = _normalize_specs_batch(np.mean(gmux, axis=1))
+        specs_avg = _normalize_specs_batch(
+            (gmux * row_weights[None, :, :]).sum(axis=1) / col_weight_sum
+        )
     else:
         specs_avg = np.empty((0, W), dtype=np.float32)
 
@@ -133,8 +174,12 @@ def plot_spectra_in_chunks(
     max_line_traces: int = 200,
     display_inline: bool = False,
     median_size: int = 0,
+    roi: dict | None = None,
+    output_dir: str | None = None,
     progress: BatchProgressReporter | None = None,
     progress_stage: str = "preview_chunk_export",
+    pre_edge_norm_range: Tuple[int, int] | None = None,
+    post_edge_norm_range: Tuple[int, int] | None = None,
 ) -> None:
     """Generate and save batch preview plots for a large DXAS scan.
 
@@ -168,7 +213,13 @@ def plot_spectra_in_chunks(
         Pixel row range ``(fr0, fr1)`` used to spatially average the
         flat-field (selects the beam footprint rows).
     norm_x1, norm_x2 : int
-        Pixel index bounds for :func:`norm_spec_preview`.
+        Legacy one-window min/max normalization bounds. Used only when
+        ``pre_edge_norm_range`` and ``post_edge_norm_range`` are not supplied.
+    pre_edge_norm_range, post_edge_norm_range : (int, int) or None
+        Manual edge-step normalization windows. When both are supplied, each
+        spectrum is normalized as ``(spec - mean(pre)) / (mean(post) - mean(pre))``
+        so the pre-edge window averages to 0 and the post-edge window averages
+        to 1.
     x1, x2 : int
         Pixel column range for plot x-axis limits.
     chunk_size : int
@@ -192,6 +243,12 @@ def plot_spectra_in_chunks(
     median_size : int
         Optional spatial median filter kernel size for hot-pixel suppression.
         ``0`` or ``1`` disables filtering; ``3`` is a common fast choice.
+    roi : dict or None
+        Optional ROI spec. When provided, it overrides ``flat_range`` and can
+        represent a tilted beam band.
+    output_dir : str or None
+        Optional directory for the generated preview files. Defaults to
+        ``<data_dir>/preliminary_results_<scan_basename>/``.
     """
     data = load_nexus_entry(data_path)["data"]   # (N, H, W)
     flat = load_nexus_entry(flat_path)["data"]    # (N, H, W)
@@ -199,14 +256,22 @@ def plot_spectra_in_chunks(
     if end_frame is None:
         end_frame = data.shape[0]
 
-    base_name = os.path.splitext(data_path)[0]
-    save_dir = os.path.join(
-        os.path.dirname(base_name),
-        "preliminary_results_" + os.path.basename(base_name),
-    )
+    if output_dir is None:
+        base_name = os.path.splitext(data_path)[0]
+        save_dir = os.path.join(
+            os.path.dirname(base_name),
+            "preliminary_results_" + os.path.basename(base_name),
+        )
+    else:
+        save_dir = os.fspath(output_dir)
     os.makedirs(save_dir, exist_ok=True)
 
-    fr0, fr1 = flat_range
+    roi_spec, (fr0, fr1), row_weights, col_weight_sum = prepare_roi_weights(
+        (int(data.shape[1]), int(data.shape[2])),
+        row_range=flat_range,
+        roi=roi,
+        dtype=np.float32,
+    )
     flat_avg = np.average(flat[:, fr0:fr1, :], axis=0)  # (fr1-fr0, W)
 
     if output_format != "html":
@@ -217,6 +282,15 @@ def plot_spectra_in_chunks(
     do_png = False
     total_frames = max(0, end_frame - start_frame)
     total_chunks = max(1, (total_frames + chunk_size - 1) // chunk_size) if total_frames > 0 else 0
+    use_edge_norm = pre_edge_norm_range is not None or post_edge_norm_range is not None
+    if (pre_edge_norm_range is None) != (post_edge_norm_range is None):
+        raise ValueError("pre_edge_norm_range and post_edge_norm_range must be set together.")
+    norm_label = (
+        f"edge-step pre={tuple(pre_edge_norm_range)} post={tuple(post_edge_norm_range)}"
+        if use_edge_norm
+        else f"min-max x={norm_x1}:{norm_x2}, factor={factor:g}"
+    )
+    heatmap_zmax = 1.0 if use_edge_norm else 1.5 * float(factor)
 
     emit_progress(
         progress,
@@ -229,6 +303,7 @@ def plot_spectra_in_chunks(
         extra={
             "data_path": os.path.abspath(data_path),
             "save_dir": save_dir,
+            "roi": roi_spec,
         },
     )
 
@@ -236,9 +311,13 @@ def plot_spectra_in_chunks(
         chunk_end = min(chunk_start + chunk_size, end_frame)
         per_frame_specs, specs_avg, n_frames, num_groups, W = _compute_chunk_specs(
             data, flat_avg, fr0, fr1,
+            row_weights,
+            col_weight_sum,
             chunk_start, chunk_end,
             aver_n, norm_x1, norm_x2, factor,
             median_size=median_size,
+            pre_edge_norm_range=pre_edge_norm_range,
+            post_edge_norm_range=post_edge_norm_range,
         )
         if n_frames <= 0:
             continue
@@ -253,6 +332,9 @@ def plot_spectra_in_chunks(
                 x1, col_end, aver_n, cmap_name, factor,
                 save_dir, data_path, max_line_traces,
                 display_inline=display_inline,
+                heatmap_zmin=0.0,
+                heatmap_zmax=heatmap_zmax,
+                norm_label=norm_label,
             )
 
         emit_progress(
@@ -301,8 +383,12 @@ def preview_spectra_html(
     max_line_traces: int = 200,
     display_inline: bool = True,
     median_size: int = 0,
+    roi: dict | None = None,
+    output_dir: str | None = None,
     progress: BatchProgressReporter | None = None,
     progress_stage: str = "preview_full_export",
+    pre_edge_norm_range: Tuple[int, int] | None = None,
+    post_edge_norm_range: Tuple[int, int] | None = None,
 ) -> None:
     """Generate **three** interactive HTML plots covering **all frames**.
 
@@ -336,14 +422,20 @@ def preview_spectra_html(
     flat_range : (int, int)
         Pixel row range ``(fr0, fr1)`` for spatial flat-field averaging.
     norm_x1, norm_x2 : int
-        Pixel index bounds for :func:`norm_spec_preview`.
+        Legacy one-window min/max normalization bounds. Used only when
+        ``pre_edge_norm_range`` and ``post_edge_norm_range`` are not supplied.
     chunk_size : int
         Frames read from disk at once (default: 1000).  Does **not** split
         the output — all frames always appear in a single set of HTML files.
     cmap_name : str
         Plotly/Matplotlib colormap name (default: ``'magma'``).
     factor : float
-        Normalisation scale passed to :func:`norm_spec_preview`.
+        Normalisation scale passed to the legacy min/max normalization.
+    pre_edge_norm_range, post_edge_norm_range : (int, int) or None
+        Manual edge-step normalization windows. When both are supplied, each
+        spectrum is normalized as ``(spec - mean(pre)) / (mean(post) - mean(pre))``
+        so the pre-edge window averages to 0 and the post-edge window averages
+        to 1.
     max_line_traces : int
         Maximum line traces in the no-averaging plot; frames are subsampled
         uniformly beyond this limit (default: 200).
@@ -354,6 +446,12 @@ def preview_spectra_html(
     median_size : int
         Optional spatial median filter kernel size for hot-pixel suppression.
         ``0`` or ``1`` disables filtering; ``3`` is a common fast choice.
+    roi : dict or None
+        Optional ROI spec. When provided, it overrides ``flat_range`` and can
+        represent a tilted beam band.
+    output_dir : str or None
+        Optional directory for the generated preview files. Defaults to
+        ``<data_dir>/preliminary_results_<scan_basename>/``.
     """
     data = load_nexus_entry(data_path)["data"]   # (N, H, W)
     flat = load_nexus_entry(flat_path)["data"]    # (N, H, W)
@@ -361,14 +459,22 @@ def preview_spectra_html(
     if end_frame is None:
         end_frame = data.shape[0]
 
-    base_name = os.path.splitext(data_path)[0]
-    save_dir = os.path.join(
-        os.path.dirname(base_name),
-        "preliminary_results_" + os.path.basename(base_name),
-    )
+    if output_dir is None:
+        base_name = os.path.splitext(data_path)[0]
+        save_dir = os.path.join(
+            os.path.dirname(base_name),
+            "preliminary_results_" + os.path.basename(base_name),
+        )
+    else:
+        save_dir = os.fspath(output_dir)
     os.makedirs(save_dir, exist_ok=True)
 
-    fr0, fr1 = flat_range
+    roi_spec, (fr0, fr1), row_weights, col_weight_sum = prepare_roi_weights(
+        (int(data.shape[1]), int(data.shape[2])),
+        row_range=flat_range,
+        roi=roi,
+        dtype=np.float32,
+    )
     flat_avg = np.average(flat[:, fr0:fr1, :], axis=0)  # (fr1-fr0, W)
 
     # Accumulate computed spectra across all chunks (raw images are NOT kept).
@@ -376,6 +482,15 @@ def preview_spectra_html(
     all_avg: list = []
     total_frames = max(0, end_frame - start_frame)
     total_chunks = max(1, (total_frames + chunk_size - 1) // chunk_size) if total_frames > 0 else 0
+    use_edge_norm = pre_edge_norm_range is not None or post_edge_norm_range is not None
+    if (pre_edge_norm_range is None) != (post_edge_norm_range is None):
+        raise ValueError("pre_edge_norm_range and post_edge_norm_range must be set together.")
+    norm_label = (
+        f"edge-step pre={tuple(pre_edge_norm_range)} post={tuple(post_edge_norm_range)}"
+        if use_edge_norm
+        else f"min-max x={norm_x1}:{norm_x2}, factor={factor:g}"
+    )
+    heatmap_zmax = 1.0 if use_edge_norm else 1.5 * float(factor)
 
     emit_progress(
         progress,
@@ -388,6 +503,7 @@ def preview_spectra_html(
         extra={
             "data_path": os.path.abspath(data_path),
             "save_dir": save_dir,
+            "roi": roi_spec,
         },
     )
 
@@ -395,9 +511,13 @@ def preview_spectra_html(
         chunk_end = min(chunk_start + chunk_size, end_frame)
         per_frame_specs, specs_avg, n_frames, _num_groups, _W = _compute_chunk_specs(
             data, flat_avg, fr0, fr1,
+            row_weights,
+            col_weight_sum,
             chunk_start, chunk_end,
             aver_n, norm_x1, norm_x2, factor,
             median_size=median_size,
+            pre_edge_norm_range=pre_edge_norm_range,
+            post_edge_norm_range=post_edge_norm_range,
         )
         if n_frames <= 0:
             continue
@@ -450,6 +570,9 @@ def preview_spectra_html(
         0, W, aver_n, cmap_name, factor,
         save_dir, data_path, max_line_traces,
         display_inline=display_inline,
+        heatmap_zmin=0.0,
+        heatmap_zmax=heatmap_zmax,
+        norm_label=norm_label,
     )
     emit_progress(
         progress,
@@ -489,6 +612,9 @@ def _save_html_chunk(
     data_path: str,
     max_line_traces: int,
     display_inline: bool = False,
+    heatmap_zmin: float = 0.0,
+    heatmap_zmax: float | None = None,
+    norm_label: str | None = None,
 ) -> list:
     """Save ONE combined interactive HTML with three stacked subplots.
 
@@ -518,6 +644,8 @@ def _save_html_chunk(
     scan_name = os.path.basename(data_path)
     pixel_axis = list(range(x1, col_end))
     frame_axis = list(range(chunk_start, chunk_end))
+    heatmap_zmax = 1.5 * float(factor) if heatmap_zmax is None else float(heatmap_zmax)
+    norm_label = norm_label or f"min-max x-range, factor={factor:g}"
 
     # Subsampling for line plots so we keep responsiveness on very large scans.
     step = max(1, n_frames // max_line_traces)
@@ -554,8 +682,8 @@ def _save_html_chunk(
             x=pixel_axis,
             y=frame_axis,
             colorscale=cmap_name,
-            zmin=0,
-            zmax=1.5 * factor,
+            zmin=float(heatmap_zmin),
+            zmax=heatmap_zmax,
             colorbar=dict(
                 title=dict(text="Intensity", side="right"),
                 len=0.5, x=0.248, y=0.5, thickness=8,
@@ -672,7 +800,7 @@ def _save_html_chunk(
 
     # Interactive offset scaling for both stacked line panels.
     # 1x is default; other levels help with crowded/sparse regions.
-    scale_vals = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0]
+    scale_vals = [0.0, 0.25, 0.5, 1.0, 1.5, 2.0, 3.0]
     if avg_trace_indices or frame_trace_indices:
         def _stack_with_scale(lines: list[np.ndarray], base: float, scale: float) -> list[list[float]]:
             return [(y + (base * scale * k)).tolist() for k, y in enumerate(lines)]
@@ -697,7 +825,7 @@ def _save_html_chunk(
         fig.update_layout(
             sliders=[
                 dict(
-                    active=2,  # default 1.0x
+                    active=3,  # default 1.0x
                     x=0.18,
                     y=-0.12,
                     len=0.62,
@@ -719,7 +847,8 @@ def _save_html_chunk(
                 f"<br><sup>frames {chunk_start:,}\u2013{chunk_end:,}"
                 f" &nbsp;|&nbsp; N={n_frames:,}"
                 f" &nbsp;|&nbsp; averaged every {aver_n} frame(s)"
-                f" &nbsp;|&nbsp; colour: {cmap_name}</sup>"
+                f" &nbsp;|&nbsp; colour: {cmap_name}"
+                f" &nbsp;|&nbsp; norm: {norm_label}</sup>"
                 "<br><sup style='color:#666'>"
                 "Zoom: click+drag on plot (both axes) &nbsp;\u2022&nbsp;"
                 "y-axis only: drag on y-axis labels &nbsp;\u2022&nbsp;"
@@ -757,6 +886,8 @@ def _save_html_chunk(
     x_hi_default = int(max(x1, col_end - 1))
     f_lo_default = int(chunk_start)
     f_hi_default = int(max(chunk_start, chunk_end - 1))
+    c_lo_default = float(heatmap_zmin)
+    c_hi_default = float(heatmap_zmax)
 
     page = f"""<!DOCTYPE html>
 <html lang="en">
@@ -793,6 +924,16 @@ def _save_html_chunk(
     <div id="{plot_div_id}" style="width:100%;"></div>
     <div id="controls">
       <div class="ctrl">
+        <h4>Heatmap color scale</h4>
+        <div class="row">
+          <label for="c_min">Vmin</label><input id="c_min" type="number" step="any">
+          <label for="c_max">Vmax</label><input id="c_max" type="number" step="any">
+          <button id="apply_c">Apply</button>
+          <button id="reset_c">Reset</button>
+        </div>
+        <div class="hint">Applies only to the first heatmap panel.</div>
+      </div>
+      <div class="ctrl">
         <h4>X ranges (all 3 plots)</h4>
         <div class="row">
           <label for="x_min">X min</label><input id="x_min" type="number" step="1">
@@ -821,18 +962,32 @@ def _save_html_chunk(
     const frameLabels = {json.dumps(frame_trace_labels)};
     const xDefault = [{x_lo_default}, {x_hi_default}];
     const fDefault = [{f_lo_default}, {f_hi_default}];
+    const cDefault = [{c_lo_default:.12g}, {c_hi_default:.12g}];
 
     const gd = document.getElementById("{plot_div_id}");
+    const cMinEl = document.getElementById("c_min");
+    const cMaxEl = document.getElementById("c_max");
     const xMinEl = document.getElementById("x_min");
     const xMaxEl = document.getElementById("x_max");
     const fMinEl = document.getElementById("f_min");
     const fMaxEl = document.getElementById("f_max");
 
     function setDefaults() {{
+      cMinEl.value = cDefault[0];
+      cMaxEl.value = cDefault[1];
       xMinEl.value = xDefault[0];
       xMaxEl.value = xDefault[1];
       fMinEl.value = fDefault[0];
       fMaxEl.value = fDefault[1];
+    }}
+
+    function applyColorRange() {{
+      const a = Number(cMinEl.value);
+      const b = Number(cMaxEl.value);
+      if (!Number.isFinite(a) || !Number.isFinite(b) || a === b) return;
+      const lo = Math.min(a, b);
+      const hi = Math.max(a, b);
+      Plotly.restyle(gd, {{"zmin": [lo], "zmax": [hi], "zauto": [false]}}, [0]);
     }}
 
     function applyXRange() {{
@@ -885,7 +1040,14 @@ def _save_html_chunk(
 
     Plotly.newPlot(gd, fig.data, fig.layout, {{responsive: true, displaylogo: false}}).then(() => {{
       setDefaults();
+      applyColorRange();
       applyFrameRange();
+      document.getElementById("apply_c").addEventListener("click", applyColorRange);
+      document.getElementById("reset_c").addEventListener("click", () => {{
+        cMinEl.value = cDefault[0];
+        cMaxEl.value = cDefault[1];
+        applyColorRange();
+      }});
       document.getElementById("apply_x").addEventListener("click", applyXRange);
       document.getElementById("reset_x").addEventListener("click", () => {{
         xMinEl.value = xDefault[0];
@@ -904,7 +1066,7 @@ def _save_html_chunk(
 </html>
 """
     with open(path_preview, "w", encoding="utf-8") as f:
-      f.write(page)
+        f.write(page)
     saved = [path_preview]
     if display_inline:
         fig.show()
