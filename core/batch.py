@@ -53,6 +53,7 @@ def norm_spec_preview(
 
 
 def _parse_timestamp_from_name(path: str) -> Optional[datetime]:
+    """Parse a ``YYYYMMDD_HHMM`` timestamp from a scan filename."""
     m = re.search(r"(\d{8})_(\d{4})", os.path.basename(path))
     if m is None:
         return None
@@ -278,6 +279,7 @@ def _normalize_spectra_chunk(
     specs: np.ndarray,
     norm_range_pixels: Optional[tuple[int, int]],
 ) -> np.ndarray:
+    """Normalize each spectrum in a 2-D chunk over a pixel window."""
     if norm_range_pixels is None:
         return specs
     x1, x2 = sorted((int(norm_range_pixels[0]), int(norm_range_pixels[1])))

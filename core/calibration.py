@@ -16,6 +16,7 @@ __all__ = [
 
 
 def _plot_calibration(traces, title: str = "Calibration"):
+    """Display calibration traces through the optional plotting adapter."""
     from ._display import show_lines
 
     show_lines(
@@ -28,6 +29,7 @@ def _plot_calibration(traces, title: str = "Calibration"):
 
 
 def _fit_poly(train: np.ndarray, target: np.ndarray, order: int) -> np.ndarray:
+    """Fit a polynomial mapping training pixel positions to target energies."""
     train = np.asarray(train, dtype=float).reshape(-1)
     target = np.asarray(target, dtype=float).reshape(-1)
     if train.size != target.size:
@@ -104,6 +106,25 @@ class EDXAS_Calibrate:
         save_param: bool = True,
         **param,
     ):
+        """Fit and store a pixel-to-energy polynomial calibration.
+
+        Parameters
+        ----------
+        train_spec:
+            Experimental spectrum whose x-axis is still detector pixel index.
+        target_spec:
+            Reference spectrum on an energy axis.
+        train, target:
+            Matched feature positions in pixel and energy units.
+        order:
+            Polynomial order for the calibration curve.
+        show:
+            If ``True``, display diagnostic overlay plots.
+        save_param:
+            If ``True``, write calibration parameters to a dated text file.
+        **param:
+            Optional plotting style keywords forwarded to the display layer.
+        """
         self.train_spec = np.asarray(train_spec, dtype=float)
         self.target_spec = np.asarray(target_spec, dtype=float)
         self.order = int(order)

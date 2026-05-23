@@ -20,6 +20,7 @@ __all__ = [
 
 
 def _plotly():
+    """Import Plotly lazily and raise an install hint if it is missing."""
     try:
         import plotly.graph_objects as go
         import plotly.io as pio
@@ -31,6 +32,7 @@ def _plotly():
 
 
 def _line_style(style_kwargs: Optional[dict]) -> tuple[dict, Optional[float]]:
+    """Translate matplotlib-like style kwargs to Plotly line settings."""
     style_kwargs = style_kwargs or {}
     line = {}
     opacity = style_kwargs.get("alpha")

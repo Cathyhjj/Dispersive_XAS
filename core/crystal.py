@@ -1,7 +1,18 @@
+"""Crystal geometry calculators for dispersive XAS beamline design.
+
+The classes in this module estimate Bragg/Laue angles, energy spread,
+focusing distances, footprint, and detector beam size for bent or flat
+crystal configurations. Distances follow the historical notebook
+conventions used by the package: source/crystal distances are meters,
+beam footprints are reported in millimeters, and energies are keV unless
+explicitly converted to eV in printed summaries.
+"""
+
 import numpy as np
 
 
 class Crystal(object):
+    """Base crystal geometry model shared by Laue and Bragg calculations."""
 
     def __init__(
         self,
@@ -54,6 +65,7 @@ class Crystal(object):
 
     @property
     def theta0(self):
+        """Return the Bragg angle in radians for the configured reflection."""
         if self.crystal != "ML":
             self.d = self.lattice_cons / np.sqrt(
                 self.hkl[0] ** 2 + self.hkl[1] ** 2 + self.hkl[2] ** 2
@@ -67,6 +79,7 @@ class Crystal(object):
 
     @property
     def energy_spread_flat(self):
+        """Return flat-crystal energy spread and angular acceptance bounds."""
         theta_Emin = self.theta0 + self.divergence / 2.0
         theta_Emax = self.theta0 - self.divergence / 2.0
 
@@ -90,6 +103,7 @@ class Crystal(object):
         return self.d_det2cen
 
     def angle_to_energy_spread_calc(self, delta_theta):
+        """Convert an angular spread in radians to an energy spread in keV."""
         deltaE = delta_theta * 1 / np.tan(self.theta0) * self.energy
         print(
             "Energy spread for %.f microrad is: %.2f eV"
@@ -99,6 +113,7 @@ class Crystal(object):
 
     @property
     def beam_size(self):
+        """Return the transverse beam size at the crystal position in mm."""
         beam_size = 2 * self.p * 1000 * np.tan(self.divergence / 2)  # + 50/1000 # in mm
         self.printlst["05_beam_size_transverse"] = (
             "Transverse beam size at a distance of %.3f m is %.3f mm"
@@ -107,6 +122,7 @@ class Crystal(object):
         return beam_size
 
     def type_writer(self, curvature=False, crystal_rotation=False, sort=True):
+        """Print the accumulated calculation summary lines."""
         if sort:
             printlst = sorted(self.printlst)
         else:
@@ -116,6 +132,7 @@ class Crystal(object):
 
 
 class Laue_Crystal(Crystal):
+    """Crystal geometry model for transmission (Laue) configurations."""
 
     def __init__(
         self,
@@ -130,6 +147,7 @@ class Laue_Crystal(Crystal):
         T=200 * 1e-6,
         condition="lower",
     ):
+        """Create a Laue crystal model with asymmetric-cut parameters."""
         super().__init__(energy, hkl, p, crystal, divergence, R)
         self.surface_hkl = surface_hkl
         self.Poisson_ratio = Poisson_ratio
@@ -145,6 +163,7 @@ class Laue_Crystal(Crystal):
 
     @property
     def assy_angle(self):
+        """Return the asymmetry cut angle in radians."""
         plane = np.array(self.hkl)
         normal = np.array(self.surface_hkl)
         assy_angle = np.pi / 2 - np.arccos(
@@ -157,6 +176,7 @@ class Laue_Crystal(Crystal):
 
     @property
     def crystal_rotation(self):
+        """Return the required Laue crystal rotation angle in radians."""
         if self.condition == "upper":
             crystal_rotation = 0.5 * np.pi - (self.assy_angle + self.theta0)
         elif self.condition == "lower":
@@ -169,10 +189,12 @@ class Laue_Crystal(Crystal):
 
     @property
     def foot_print(self):
+        """Return the beam footprint on the crystal in mm."""
         return self.beam_size / np.sin(self.crystal_rotation)  # in mm
 
     @property
     def energy_spread_bent(self):
+        """Return energy spread caused by divergence plus crystal bending."""
         delta_bent_crystal = self.foot_print / 1000 / self.R  # in radians
         delta_theta = self.divergence + delta_bent_crystal
         deltaE = delta_theta * 1 / np.tan(self.theta0) * self.energy
@@ -184,6 +206,7 @@ class Laue_Crystal(Crystal):
 
     @property
     def energy_spread_bent_esrf(self):
+        """Return the ESRF-style bent-crystal energy-spread estimate."""
         delta_theta = (
             self.beam_size / 1000 / np.cos(self.theta0) / 2 * (1 / self.p - self.f_g)
         )  # beamsize in mm, this is only true for symmetric crystal
@@ -195,6 +218,7 @@ class Laue_Crystal(Crystal):
         return deltaE
 
     def curvature_calc(self, exp_spread=0):
+        """Estimate crystal curvature from the difference to measured spread."""
         self.diff_spread = self.energy_spread_flat[0] - exp_spread
         self.diff_delta = self.diff_spread * np.tan(self.theta0) / self.energy
         self.crys_curvature = self.foot_print / self.diff_delta / 1000  # in m
@@ -221,6 +245,7 @@ class Laue_Crystal(Crystal):
         return self.crys_curvature
 
     def single_ray_focus_calc(self):
+        """Calculate single-ray focus distance for the bent Laue crystal."""
         if self.condition == "upper":
             theta0 = self.theta0
         elif self.condition == "lower":
@@ -240,6 +265,7 @@ class Laue_Crystal(Crystal):
         return self.f_p
 
     def geometric_focus_calc(self, assy_angle=None):
+        """Calculate geometric focus distance for the Laue crystal."""
         if self.condition == "upper":
             theta0 = self.theta0
         elif self.condition == "lower":
@@ -258,6 +284,7 @@ class Laue_Crystal(Crystal):
         return self.f_g
 
     def Laue_size_calc(self, det2crys_d):
+        """Estimate Laue beam size at a detector distance from the crystal."""
         if self.condition == "upper":
             theta0 = self.theta0
         elif self.condition == "lower":
@@ -288,6 +315,7 @@ class Laue_Crystal(Crystal):
         return self.Laue_size
 
     def magic_condition_calc(self):
+        """Return the Laue magic-condition coefficient."""
         if self.condition == "upper":
             theta0 = self.theta0
         elif self.condition == "lower":
@@ -304,6 +332,7 @@ class Laue_Crystal(Crystal):
         return magic_coeff
 
     def Borrmann_calc(self):
+        """Calculate Borrmann fan angular width for a bent Laue crystal."""
         if self.condition == "upper":
             theta0 = self.theta0
         elif self.condition == "lower":
@@ -331,6 +360,7 @@ class Laue_Crystal(Crystal):
         return Borrmann_angle
 
     def Borrmann_flat_calc(self):
+        """Calculate flat-crystal Borrmann fan width in meters."""
         Borrmann_width = 2 * self.T * np.sin(self.theta0)  # in meter
         self.printlst["Laue10_00_Borrmann_fan"] = (
             "Borrmann fan (flat_crystal):%.3f microm" % (Borrmann_width * 1e6)
@@ -339,6 +369,7 @@ class Laue_Crystal(Crystal):
         return Borrmann_width
 
     def Borrmann_bent_calc(self):
+        """Calculate bent-crystal Borrmann fan width in meters."""
         if self.condition == "upper":
             theta0 = self.theta0
         elif self.condition == "lower":
@@ -349,6 +380,7 @@ class Laue_Crystal(Crystal):
         return Borrmann_width
 
     def rotation_spread(self, rotation_angle=0):
+        """Return energy spread introduced by a rotation offset in degrees."""
         rotation_angle = np.deg2rad(rotation_angle)
         new_theta0 = self.theta0 + rotation_angle
         rotation_spread = self.energy * (rotation_angle) / np.tan(new_theta0)
@@ -358,6 +390,7 @@ class Laue_Crystal(Crystal):
         return rotation_spread
 
     def energy_resolution_calc(self, angular_spread):
+        """Convert an angular spread in radians to an energy spread in keV."""
         E_spread = angular_spread * self.energy / np.tan(self.theta0)
         self.printlst["Laue13_energy_resolution"] = (
             "The energy spread for angular spread of %.03f microrad is: %.03f eV"
@@ -367,6 +400,7 @@ class Laue_Crystal(Crystal):
 
 
 class Bragg_Crystal(Crystal):
+    """Crystal geometry model for reflection (Bragg) configurations."""
 
     def __init__(
         self,
@@ -380,6 +414,7 @@ class Bragg_Crystal(Crystal):
         assy_angle=0,
         condition="upper",
     ):
+        """Create a Bragg crystal model with asymmetry and bend settings."""
         super().__init__(energy, hkl, p, crystal, divergence, R, d_ML)
         self.printlst["00_header_top_01"] = "-" * 17 + " BRAGG CRYSTAL " + "-" * 17
         self.assy_angle = assy_angle
@@ -387,6 +422,7 @@ class Bragg_Crystal(Crystal):
 
     @property
     def crystal_rotation(self):
+        """Return the required Bragg crystal rotation angle in radians."""
         if self.condition == "upper":
             crystal_rotation = self.assy_angle + self.theta0
         elif self.condition == "lower":
@@ -399,12 +435,14 @@ class Bragg_Crystal(Crystal):
 
     @property
     def foot_print(self):
+        """Return the beam footprint on the Bragg crystal in mm."""
         self.printlst["Laue03_foot_print"] = "footprint on the crystal: %.3f mm \n" % (
             self.beam_size / np.sin(self.crystal_rotation)
         )
         return self.beam_size / np.sin(self.crystal_rotation)  # in mm
 
     def energy_spread_bent_calc(self, foot_print_set=None):
+        """Calculate bent-crystal energy spread for a Bragg geometry."""
         if foot_print_set is None:
             foot_print_set = self.foot_print
         else:
@@ -428,6 +466,7 @@ class Bragg_Crystal(Crystal):
 
     @property
     def energy_spread_bent_esrf(self):
+        """Return the ESRF-style Bragg energy-spread estimate."""
         self.geometric_focus_calc(self.assy_angle)
         delta_theta = (
             self.foot_print
@@ -444,6 +483,7 @@ class Bragg_Crystal(Crystal):
         return deltaE
 
     def curvature_calc(self, exp_spread=0):
+        """Estimate Bragg crystal curvature from measured energy spread."""
         self.diff_spread = self.energy_spread_flat[0] - exp_spread
         self.diff_delta = self.diff_spread * np.tan(self.theta0) / self.energy
         self.crys_curvature = self.foot_print / self.diff_delta / 1000  # in m
@@ -470,6 +510,7 @@ class Bragg_Crystal(Crystal):
         return self.crys_curvature
 
     def geometric_focus_calc(self, assy_angle=None):
+        """Calculate geometric focus distance for the Bragg crystal."""
         if self.condition == "upper":
             theta0 = self.theta0
         elif self.condition == "lower":
@@ -489,6 +530,7 @@ class Bragg_Crystal(Crystal):
         return self.f_g
 
     def Bragg_size_calc(self, det2crys_d=None, dety=None):
+        """Estimate Bragg beam size at the detector."""
         if self.condition == "upper":
             theta0 = self.theta0
         elif self.condition == "lower":
@@ -529,6 +571,7 @@ class Bragg_Crystal(Crystal):
         return self.Bragg_size, self.Bragg_size_vertical
 
     def rotation_spread(self, rotation_angle=0):
+        """Return energy spread introduced by a Bragg rotation offset."""
         rotation_angle = np.deg2rad(rotation_angle)
         new_theta0 = self.theta0 + rotation_angle
         rotation_spread = self.energy * (rotation_angle) / np.tan(new_theta0)
@@ -538,6 +581,7 @@ class Bragg_Crystal(Crystal):
         return rotation_spread
 
     def energy_resolution_calc(self, pixel_size=75):
+        """Estimate energy resolution in eV per detector pixel."""
         self.energy_resolution = (
             self.energy_spread_bent * 1000 / (self.Bragg_size / (pixel_size / 1e6))
         )

@@ -31,6 +31,7 @@ __all__ = [
 
 
 def _plot_lines(traces, title="", x_label="X", y_label="Y"):
+    """Display line traces through the optional web plotting adapter."""
     from ._display import show_lines
 
     show_lines(traces=traces, title=title, x_label=x_label, y_label=y_label, show=True)
@@ -90,6 +91,7 @@ def spectrum_generate(
 
 
 def _normalization_mask(energy: np.ndarray, x0, x1) -> np.ndarray:
+    """Build the boolean mask used to choose normalization reference points."""
     if x1 is None:
         return np.isfinite(energy)
     if isinstance(x0, (list, tuple, np.ndarray)):
@@ -236,6 +238,7 @@ def spec_save(
 
 
 def _safe_savgol(y: np.ndarray, window_length: int, polyorder: int) -> np.ndarray:
+    """Apply Savitzky-Golay smoothing with a valid odd window length."""
     from scipy.signal import savgol_filter
 
     w = max(int(window_length), int(polyorder) + 2)

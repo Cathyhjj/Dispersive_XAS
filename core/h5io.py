@@ -30,6 +30,7 @@ def sdebug(f):
     """
 
     def newf(*args, **kwds):
+        """Print the wrapped store-function name before delegating."""
         print(("{0:20} {1:20}".format(f.__name__, args[2])))
         return f(*args, **kwds)
 
@@ -39,10 +40,14 @@ def sdebug(f):
 
 # Helper functions to load slices
 class Str_to_Slice(object):
+    """Convert a textual slice expression into a Python slice object."""
+
     def __getitem__(self, x):
+        """Return the slice produced by normal ``[]`` evaluation."""
         return x
 
     def __call__(self, s):
+        """Evaluate a string such as ``[1:3]`` against this helper."""
         return eval("self" + s)
 
 
@@ -93,16 +98,19 @@ def _h5write(filename, mode, *args, **kwargs):
     # dt = h5py.new_vlen(str)
 
     def check_id(id):
+        """Record an object id and reject circular references."""
         if id in ids:
             raise RuntimeError("Circular reference detected! Aborting save.")
         else:
             ids.append(id)
 
     def pop_id(id):
+        """Remove an object id from the active circular-reference stack."""
         ids[:] = [x for x in ids if x != id]
 
     # @sdebug
     def _store_numpy(group, a, name, compress=True):
+        """Store a numpy array or scalar payload in an HDF5 dataset."""
         if compress:
             dset = group.create_dataset(name, data=a, compression="gzip")
         else:
@@ -112,18 +120,21 @@ def _h5write(filename, mode, *args, **kwargs):
 
     # @sdebug
     def _store_string(group, s, name):
+        """Store a bytes payload in an HDF5 dataset."""
         dset = group.create_dataset(name, data=np.asarray(s))
         dset.attrs["type"] = "string"
         return dset
 
     # @sdebug
     def _store_unicode(group, s, name):
+        """Store a Python string as UTF-8 encoded bytes."""
         dset = group.create_dataset(name, data=np.asarray(s.encode("utf8")))
         dset.attrs["type"] = "unicode"
         return dset
 
     # @sdebug
     def _store_list(group, l, name):
+        """Store a list either as an array or as numbered child datasets."""
         check_id(id(l))
         arrayOK = len(set([type(x) for x in l])) == 1
         if arrayOK:
@@ -148,6 +159,7 @@ def _h5write(filename, mode, *args, **kwargs):
 
     # @sdebug
     def _store_tuple(group, t, name):
+        """Store a tuple using the list serializer and mark tuple type."""
         dset = _store_list(group, list(t), name)
         dset_type = dset.attrs["type"]
         dset.attrs["type"] = "arraytuple" if dset_type == "arraylist" else "tuple"
@@ -155,6 +167,7 @@ def _h5write(filename, mode, *args, **kwargs):
 
     # @sdebug
     def _store_dict(group, d, name):
+        """Store a dictionary with string keys as an HDF5 group."""
         check_id(id(d))
         if any([type(k) not in [str, str] for k in list(d.keys())]):
             raise RuntimeError("Only dictionaries with string keys are supported.")
@@ -172,6 +185,7 @@ def _h5write(filename, mode, *args, **kwargs):
         return dset
 
     def _store_dict_new(group, d, name):
+        """Store a dictionary as numbered key/value tuple entries."""
         check_id(id(d))
         dset = group.create_group(name)
         dset.attrs["type"] = "dict"
@@ -182,12 +196,14 @@ def _h5write(filename, mode, *args, **kwargs):
 
     # @sdebug
     def _store_None(group, a, name):
+        """Store a placeholder dataset representing ``None``."""
         dset = group.create_dataset(name, data=np.zeros((1,)))
         dset.attrs["type"] = "None"
         return dset
 
     # @sdebug
     def _store_pickle(group, a, name):
+        """Store an unsupported object by pickling it."""
         apic = pickle.dumps(a)
         dset = group.create_dataset(name, data=np.asarray(apic))
         dset.attrs["type"] = "pickle"
@@ -195,6 +211,7 @@ def _h5write(filename, mode, *args, **kwargs):
 
     # @sdebug
     def _store(group, a, name):
+        """Dispatch one Python object to the appropriate HDF5 serializer."""
         if type(a) is bytes:
             dset = _store_string(group, a, name)
         elif type(a) is str:
@@ -347,6 +364,7 @@ def h5read(filename, *args, **kwargs):
 
     # Define helper functions
     def _load_dict_new(dset):
+        """Load a dictionary saved as numbered key/value tuple entries."""
         d = {}
         keys = list(dset.keys())
         keys.sort()
@@ -356,6 +374,7 @@ def h5read(filename, *args, **kwargs):
         return d
 
     def _load_dict(dset):
+        """Load a dictionary group, restoring escaped slash characters."""
         d = {}
         for k, v in list(dset.items()):
             if v.attrs.get("escaped", None) is not None:
@@ -364,6 +383,7 @@ def h5read(filename, *args, **kwargs):
         return d
 
     def _load_list(dset):
+        """Load a numbered HDF5 group as a Python list."""
         l = []
         keys = list(dset.keys())
         keys.sort()
@@ -372,27 +392,33 @@ def h5read(filename, *args, **kwargs):
         return l
 
     def _load_numpy(dset, sl=None):
+        """Load an HDF5 dataset, optionally applying a slice."""
         if sl is not None:
             return dset[sl]
         else:
             return dset[...]
 
     def _load_scalar(dset):
+        """Load a scalar dataset as a Python scalar when possible."""
         try:
             return dset[...].item()
         except:
             return dset[...]
 
     def _load_str(dset):
+        """Load a bytes/string dataset."""
         return dset[()]
 
     def _load_unicode(dset):
+        """Load a UTF-8 encoded string dataset."""
         return dset[()].decode("utf8")
 
     def _load_pickle(dset):
+        """Load a pickled Python object from an HDF5 dataset."""
         return pickle.loads(dset[...])
 
     def _load(dset, sl=None):
+        """Dispatch one HDF5 object to the appropriate deserializer."""
         dset_type = dset.attrs.get("type", None)
         # Loading a file written with python2 -> need to convert from bytes to string.
         if type(dset_type) is bytes:
@@ -526,6 +552,7 @@ def h5info(filename, output=None, print_on=True):
     filename = os.path.abspath(os.path.expanduser(filename))
 
     def _format_dict(key, dset):
+        """Format a dictionary group for ``h5info`` output."""
         stringout = " " * key[0] + " * %s [dict]:\n" % key[1]
         for k, v in list(dset.items()):
             if v.attrs.get("escaped", None) is not None:
@@ -534,6 +561,7 @@ def h5info(filename, output=None, print_on=True):
         return stringout
 
     def _format_list(key, dset):
+        """Format a list group for ``h5info`` output."""
         stringout = " " * key[0] + " * %s [list]:\n" % key[1]
         keys = list(dset.keys())
         keys.sort()
@@ -542,6 +570,7 @@ def h5info(filename, output=None, print_on=True):
         return stringout
 
     def _format_tuple(key, dset):
+        """Format a tuple group for ``h5info`` output."""
         stringout = " " * key[0] + " * %s [tuple]:\n" % key[1]
         keys = list(dset.keys())
         keys.sort()
@@ -550,6 +579,7 @@ def h5info(filename, output=None, print_on=True):
         return stringout
 
     def _format_arraytuple(key, dset):
+        """Format an array-backed tuple for ``h5info`` output."""
         a = dset[...]
         if len(a) < 5:
             stringout = (
@@ -581,6 +611,7 @@ def h5info(filename, output=None, print_on=True):
         return stringout
 
     def _format_arraylist(key, dset):
+        """Format an array-backed list for ``h5info`` output."""
         a = dset[...]
         if len(a) < 5:
             stringout = (
@@ -607,6 +638,7 @@ def h5info(filename, output=None, print_on=True):
         return stringout
 
     def _format_numpy(key, dset):
+        """Format a numpy dataset for ``h5info`` output."""
         a = dset[...]
         if len(a) < 5 and a.ndim == 1:
             stringout = (
@@ -626,12 +658,14 @@ def h5info(filename, output=None, print_on=True):
         return stringout
 
     def _format_scalar(key, dset):
+        """Format a scalar dataset for ``h5info`` output."""
         stringout = (
             " " * key[0] + " * " + key[1] + " [scalar = " + str(dset[...]) + "]\n"
         )
         return stringout
 
     def _format_str(key, dset):
+        """Format a bytes/string dataset for ``h5info`` output."""
         s = str(dset[...])
         if len(s) > 40:
             s = s[:40] + "..."
@@ -639,6 +673,7 @@ def h5info(filename, output=None, print_on=True):
         return stringout
 
     def _format_unicode(key, dset):
+        """Format a UTF-8 string dataset for ``h5info`` output."""
         s = str(dset[...]).decode("utf8")
         if len(s) > 40:
             s = s[:40] + "..."
@@ -646,18 +681,22 @@ def h5info(filename, output=None, print_on=True):
         return stringout
 
     def _format_pickle(key, dset):
+        """Format a pickled-object placeholder for ``h5info`` output."""
         stringout = " " * key[0] + " * " + key[1] + " [pickled object]\n"
         return stringout
 
     def _format_None(key, dset):
+        """Format a ``None`` placeholder for ``h5info`` output."""
         stringout = " " * key[0] + " * " + key[1] + " [None]\n"
         return stringout
 
     def _format_unknown(key, dset):
+        """Format an unsupported HDF5 object for ``h5info`` output."""
         stringout = " " * key[0] + " * " + key[1] + " [unknown]\n"
         return stringout
 
     def _format(key, dset):
+        """Dispatch one HDF5 object to the matching ``h5info`` formatter."""
         dset_type = dset.attrs.get("type", None)
 
         # Treat groups as dicts

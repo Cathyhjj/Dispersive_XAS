@@ -30,6 +30,8 @@ __all__ = [
 
 @dataclass
 class _RotRectROI:
+    """Internal representation of a rotated rectangular ROI."""
+
     cx: float
     cy: float
     width: float
@@ -38,6 +40,7 @@ class _RotRectROI:
 
 
 def _default_roi(shape: tuple[int, int], frac: float = 0.4) -> _RotRectROI:
+    """Return a centered default ROI covering a fraction of the image."""
     h, w = shape
     return _RotRectROI(
         cx=w / 2.0,
@@ -49,6 +52,7 @@ def _default_roi(shape: tuple[int, int], frac: float = 0.4) -> _RotRectROI:
 
 
 def _roi_vertices(roi: _RotRectROI) -> np.ndarray:
+    """Return the four corner vertices for a rotated rectangle."""
     hw = roi.width / 2.0
     hh = roi.height / 2.0
     corners = np.array(
@@ -67,6 +71,7 @@ def _roi_vertices(roi: _RotRectROI) -> np.ndarray:
 
 
 def _polygon_mask(shape: tuple[int, int], vertices: np.ndarray) -> np.ndarray:
+    """Rasterize polygon vertices into a boolean image mask."""
     h, w = shape
     yy, xx = np.mgrid[:h, :w]
     xv = vertices[:, 0]
@@ -86,6 +91,7 @@ def _polygon_mask(shape: tuple[int, int], vertices: np.ndarray) -> np.ndarray:
 
 
 def _spectrum_from_mask(img: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """Average image rows inside a boolean mask for every column."""
     masked = np.ma.array(img, mask=~mask)
     spec = np.ma.mean(masked, axis=0)
     if isinstance(spec, np.ma.MaskedArray):
@@ -94,6 +100,7 @@ def _spectrum_from_mask(img: np.ndarray, mask: np.ndarray) -> np.ndarray:
 
 
 def _shape_to_bounds(shape_obj) -> Optional[tuple[float, float, float, float]]:
+    """Extract axis-aligned rectangle bounds from a Plotly shape object."""
     if hasattr(shape_obj, "to_plotly_json"):
         st = shape_obj.to_plotly_json()
     elif isinstance(shape_obj, dict):
@@ -111,6 +118,7 @@ def _shape_to_bounds(shape_obj) -> Optional[tuple[float, float, float, float]]:
 
 
 def _shape_to_path_points(shape_obj) -> Optional[np.ndarray]:
+    """Extract four polygon vertices from a Plotly SVG path shape."""
     if hasattr(shape_obj, "to_plotly_json"):
         st = shape_obj.to_plotly_json()
     elif isinstance(shape_obj, dict):
@@ -142,6 +150,7 @@ def _shape_to_path_points(shape_obj) -> Optional[np.ndarray]:
 def _display_image_and_limits(
     img: np.ndarray, q_low: float = 1.0, q_high: float = 99.0
 ) -> tuple[np.ndarray, float, float]:
+    """Return a finite display image plus robust color limits."""
     arr = np.asarray(img, dtype=float)
     finite = arr[np.isfinite(arr)]
     if finite.size == 0:
@@ -166,6 +175,7 @@ def _display_image_and_limits(
 def _clip_bounds(
     bounds: tuple[float, float, float, float], shape: tuple[int, int]
 ) -> tuple[float, float, float, float]:
+    """Clip rectangle bounds to image dimensions and keep them non-empty."""
     h, w = shape
     max_x = max(1.0, float(w - 1))
     max_y = max(1.0, float(h - 1))
@@ -182,6 +192,7 @@ def _clip_bounds(
 
 
 def _roi_from_vertices(vertices: np.ndarray, fallback_angle: float = 0.0) -> _RotRectROI:
+    """Convert edited polygon vertices back to a rotated-rectangle ROI."""
     pts = np.asarray(vertices, dtype=float)
     if pts.shape[0] < 4:
         x0 = float(np.min(pts[:, 0]))
@@ -242,6 +253,7 @@ class PgSpec:
     """Rectangle ROI manager with rotation support and live spectrum preview."""
 
     def __init__(self, data: np.ndarray, title: str = "", **kwargs):
+        """Create a rectangular ROI manager for a 2-D image."""
         data = np.asarray(data)
         if data.ndim != 2:
             raise ValueError("PgSpec expects a 2-D image.")
@@ -264,6 +276,7 @@ class PgSpec:
         self._height_callback = None
 
     def _sanitize_roi(self, roi: _RotRectROI) -> _RotRectROI:
+        """Clamp ROI center and dimensions to image-compatible values."""
         h, w = self.data.shape
         roi.cx = float(np.clip(roi.cx, 0.0, max(0.0, float(w - 1))))
         roi.cy = float(np.clip(roi.cy, 0.0, max(0.0, float(h - 1))))
@@ -273,10 +286,12 @@ class PgSpec:
         return roi
 
     def _shape_path(self, roi_name: str) -> str:
+        """Return the Plotly path string for a named rotated ROI."""
         pts = _roi_vertices(self.rects[roi_name])
         return "M " + " L ".join(f"{p[0]},{p[1]}" for p in pts) + " Z"
 
     def _rot_shape(self, roi_name: str) -> dict:
+        """Build the editable Plotly shape dictionary for a named ROI."""
         return dict(
             type="path",
             path=self._shape_path(roi_name),
@@ -287,6 +302,7 @@ class PgSpec:
         )
 
     def _sync_roi_from_selector(self, name: str) -> bool:
+        """Read the current Plotly selector shape into ``self.rects``."""
         if self._selector_figure is None:
             return False
         if name not in self.rects:
@@ -330,6 +346,7 @@ class PgSpec:
         return changed
 
     def _sync_roi_from_relayout_payload(self, name: str, payload: dict) -> bool:
+        """Update ROI state from a Plotly relayout payload."""
         if name not in self.rects:
             self.set_rect(name=name)
         current = self.rects[name]
@@ -417,6 +434,7 @@ class PgSpec:
         return changed
 
     def _extract_relayout_payload(self, raw) -> dict:
+        """Normalize Plotly FigureWidget relayout event payload shapes."""
         if not isinstance(raw, dict):
             return {}
         # FigureWidget trait packs relayout payload in this wrapper.
@@ -428,6 +446,7 @@ class PgSpec:
         return raw
 
     def _sync_control_values(self, name: str) -> None:
+        """Synchronize sliders from the current ROI state."""
         if name not in self.rects:
             return
         r = self.rects[name]
@@ -445,6 +464,7 @@ class PgSpec:
                 self._height_slider.value = v
 
     def _update_selector_plot(self, name: str, reset_shape: bool = True) -> None:
+        """Refresh selector image, ROI shape, sliders, and spectrum trace."""
         if self._selector_figure is None:
             return
         if name not in self.rects:
@@ -468,6 +488,7 @@ class PgSpec:
         self._selector_updating = False
 
     def _on_selector_edited(self, name: str) -> None:
+        """Handle Plotly edit-complete events from the ROI selector."""
         if self._selector_updating:
             return
         if self._selector_name != name:
@@ -477,6 +498,7 @@ class PgSpec:
             self._update_selector_plot(name=name, reset_shape=True)
 
     def _on_selector_relayout(self, name: str, change: dict) -> None:
+        """Handle live Plotly relayout updates while the ROI is edited."""
         if self._selector_updating:
             return
         if self._selector_name != name:
@@ -493,6 +515,7 @@ class PgSpec:
         self._update_selector_plot(name=name, reset_shape=False)
 
     def _on_selector_shapes_change(self, name: str) -> None:
+        """Handle shape-array changes emitted by the Plotly layout object."""
         if self._selector_updating:
             return
         if self._selector_name != name:
@@ -503,6 +526,7 @@ class PgSpec:
         self._update_selector_plot(name=name, reset_shape=False)
 
     def _on_rotation_change(self, name: str, change: dict) -> None:
+        """Handle angle-slider changes for the rectangular ROI selector."""
         if self._selector_updating:
             return
         if change.get("name") != "value":
@@ -515,6 +539,7 @@ class PgSpec:
         self._update_selector_plot(name=name, reset_shape=True)
 
     def _on_size_change(self, name: str, which: str, change: dict) -> None:
+        """Handle width or height slider changes for the ROI selector."""
         if self._selector_updating:
             return
         if change.get("name") != "value":
@@ -703,9 +728,11 @@ class PgSpec:
         self._height_slider = slider_height
 
         def _edits_cb() -> None:
+            """Forward edit-complete callbacks with the active ROI name."""
             self._on_selector_edited(name=name)
 
         def _angle_cb(change: dict) -> None:
+            """Forward angle slider callbacks with the active ROI name."""
             self._on_rotation_change(name=name, change=change)
 
         self._edits_callback = _edits_cb
@@ -746,6 +773,7 @@ class PgSpec:
         return self.rects[name]
 
     def _mask_from_roi(self, roi_name: str = "main") -> np.ndarray:
+        """Build a boolean mask from the named rotated rectangle."""
         if roi_name not in self.rects:
             self.set_rect(name=roi_name)
         vertices = _roi_vertices(self.rects[roi_name])
@@ -867,6 +895,7 @@ class TiltedBandROIEditor:
         title: str = "",
         save_path: str | Path | None = None,
     ):
+        """Create a tilted-band ROI editor around a representative image."""
         data = np.asarray(data, dtype=float)
         if data.ndim != 2:
             raise ValueError("TiltedBandROIEditor expects a 2-D image.")
@@ -891,6 +920,7 @@ class TiltedBandROIEditor:
         self._save_status = None
 
     def _normalize_initial_roi(self, initial_roi: Optional[dict]) -> dict[str, object]:
+        """Return a valid tilted-band ROI from user input or a default band."""
         h, _w = self.data.shape
         if initial_roi is None:
             center = 0.5 * max(0.0, float(h - 1))
@@ -923,6 +953,7 @@ class TiltedBandROIEditor:
         return save_roi_json(out_path, self.get_spec(), metadata=payload_meta)
 
     def _sync_roi_from_controls(self) -> None:
+        """Rebuild the ROI spec from the current slider values."""
         self.roi = make_tilted_band_roi(
             self.data.shape,
             left_center_row=float(self._left_slider.value),
@@ -931,6 +962,7 @@ class TiltedBandROIEditor:
         )
 
     def _summary_text(self) -> str:
+        """Return the HTML summary shown below the tilted-band controls."""
         left, right, half_width = tilted_band_controls_from_roi(self.data.shape, roi=self.roi)
         center = 0.5 * (left + right)
         slope = float(self.roi.get("slope_per_col", 0.0))
@@ -942,6 +974,7 @@ class TiltedBandROIEditor:
         )
 
     def _sync_center_slider_value(self) -> None:
+        """Keep the center slider equal to the mean of left/right rows."""
         if self._center_slider is None or self._left_slider is None or self._right_slider is None:
             return
         center = 0.5 * (float(self._left_slider.value) + float(self._right_slider.value))
@@ -950,6 +983,7 @@ class TiltedBandROIEditor:
             self._center_slider.value = center
 
     def _update_plot(self) -> None:
+        """Refresh the tilted-band preview and live spectrum."""
         if self._left_slider is None:
             return
 
@@ -990,6 +1024,7 @@ class TiltedBandROIEditor:
         bottom: np.ndarray,
         spec: np.ndarray,
     ) -> None:
+        """Render the fallback Plotly preview inside an ipywidgets output."""
         if self._plot_output is None:
             return
         import plotly.graph_objects as go
@@ -1080,11 +1115,13 @@ class TiltedBandROIEditor:
         self._updating = False
 
     def _on_slider_change(self, change: dict) -> None:
+        """Handle left/right/width slider changes."""
         if self._updating or change.get("name") != "value":
             return
         self._update_plot()
 
     def _on_center_change(self, change: dict) -> None:
+        """Move the whole tilted band while preserving its slope and width."""
         if self._updating or change.get("name") != "value":
             return
         if self._center_slider is None or self._left_slider is None or self._right_slider is None:
@@ -1116,6 +1153,7 @@ class TiltedBandROIEditor:
         self._update_plot()
 
     def _on_save_clicked(self, _button) -> None:
+        """Save the current tilted-band ROI from the notebook button."""
         if self._save_status is None:
             return
         try:

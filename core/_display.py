@@ -15,6 +15,7 @@ _PLOTTING = None
 
 
 def _warn_once(msg: str) -> None:
+    """Warn once per process when optional plotting cannot be performed."""
     global _WARNED
     if not _WARNED:
         warnings.warn(msg, RuntimeWarning, stacklevel=3)
@@ -22,6 +23,7 @@ def _warn_once(msg: str) -> None:
 
 
 def _get_plotting():
+    """Import and cache the optional web plotting module."""
     global _PLOTTING
     if _PLOTTING is not None:
         return _PLOTTING
@@ -35,6 +37,7 @@ def _get_plotting():
 
 
 def _dispatch(fn_name: str, *args, **kwargs):
+    """Forward a display call to ``Dispersive_XAS.web.plotting`` if present."""
     mod = _get_plotting()
     if mod is False:
         _warn_once(
@@ -50,21 +53,25 @@ def _dispatch(fn_name: str, *args, **kwargs):
 
 
 def show_lines(*args, **kwargs):
+    """Display one or more line traces through the optional plotting backend."""
     return _dispatch("show_lines", *args, **kwargs)
 
 
 def show_line(*args, **kwargs):
+    """Display one line trace through the optional plotting backend."""
     return _dispatch("show_line", *args, **kwargs)
 
 
 def show_image(*args, **kwargs):
+    """Display one image through the optional plotting backend."""
     return _dispatch("show_image", *args, **kwargs)
 
 
 def show_image_stack(*args, **kwargs):
+    """Display an image stack through the optional plotting backend."""
     return _dispatch("show_image_stack", *args, **kwargs)
 
 
 def show_mask_overlay(*args, **kwargs):
+    """Display an image with a mask overlay through the plotting backend."""
     return _dispatch("show_mask_overlay", *args, **kwargs)
-

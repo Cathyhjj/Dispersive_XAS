@@ -25,44 +25,54 @@ __all__ = [
 
 
 def rotate_image(img, angle):
+    """Rotate an image by ``angle`` degrees using scipy.ndimage."""
     return nd.rotate(img, -angle)
 
 
 def shift_image(img, x_shift, y_shift):
+    """Shift an image by the requested row and column offsets."""
     return nd.shift(img, (x_shift, y_shift))
 
 
 def flip_image_horizontal(img):
+    """Flip an image left-to-right."""
     return np.fliplr(img)
 
 
 def flip_image_vertical(img):
+    """Flip an image top-to-bottom."""
     return np.flipud(img)
 
 
 def invert_image(img):
+    """Invert image sign."""
     return -img
 
 
 def log_image(img):
+    """Apply the natural logarithm to an image."""
     return np.log(img)
 
 
 def threshold_image_min(img, min_val):
+    """Clip image values below ``min_val`` in-place and return the image."""
     img[img < min_val] = min_val
     return img
 
 
 def threshold_image_max(img, max_val):
+    """Clip image values above ``max_val`` in-place and return the image."""
     img[img > max_val] = max_val
     return img
 
 
 def median_filter_image(img, size):
+    """Apply a median filter to an image."""
     return nd.median_filter(img, size=size)
 
 
 def gaussian_filter_image(img, sigma):
+    """Apply a Gaussian filter to an image."""
     return nd.gaussian_filter(img, sigma=sigma)
 
 

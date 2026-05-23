@@ -68,6 +68,7 @@ class XAS_spec:
     """
 
     def __init__(self, imgs: np.ndarray, m: Optional[np.ndarray] = None):
+        """Store input images and normalize the mask representation."""
         imgs = np.asarray(imgs)
         self.imgs = imgs.reshape(-1, imgs.shape[-2], imgs.shape[-1])
         self.data_range: int = self.imgs.shape[0]

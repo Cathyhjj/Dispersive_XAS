@@ -11,10 +11,12 @@ from typing import Any, TextIO
 
 
 def _utc_iso(ts: float) -> str:
+    """Format a Unix timestamp as a UTC ISO-8601 string."""
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _format_duration(seconds: float | None) -> str:
+    """Format elapsed seconds as MM:SS or HH:MM:SS."""
     if seconds is None:
         return "unknown"
     total = max(0, int(round(float(seconds))))
@@ -37,6 +39,11 @@ def format_progress_line(
     stage_elapsed_s: float | None = None,
     eta_s: float | None = None,
 ) -> str:
+    """Build the human-readable console line for one progress update.
+
+    The line is intentionally compact so it works both in notebooks and in
+    terminal logs produced by long batch jobs.
+    """
     pieces = [f"[{label}]", status, stage.replace("_", " ")]
     if current is not None and total is not None and total > 0:
         percent = (100.0 * float(current)) / float(total)
@@ -65,6 +72,20 @@ class BatchProgressReporter:
         enabled: bool = True,
         label: str = "DXAS",
     ) -> None:
+        """Create a progress reporter.
+
+        Parameters
+        ----------
+        json_path:
+            Optional path to a JSON file that is atomically refreshed after
+            each update.
+        stream:
+            Text stream used for console output. Defaults to ``sys.stdout``.
+        enabled:
+            If ``False``, suppress console output while still updating JSON.
+        label:
+            Prefix shown in console progress lines.
+        """
         self.json_path = Path(json_path).expanduser().resolve() if json_path else None
         self.stream = sys.stdout if stream is None else stream
         self.enabled = bool(enabled)
@@ -76,6 +97,7 @@ class BatchProgressReporter:
         self.last_payload: dict[str, Any] | None = None
 
     def set_context(self, **kwargs: Any) -> None:
+        """Attach static key/value metadata to future progress payloads."""
         self._context = {k: v for k, v in kwargs.items() if v is not None}
 
     def update(
@@ -89,6 +111,7 @@ class BatchProgressReporter:
         message: str | None = None,
         extra: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        """Emit and persist one structured progress update."""
         now = time.time()
         if stage != self._current_stage or status == "started":
             self._current_stage = stage
@@ -165,6 +188,7 @@ def emit_progress(
     extra: dict[str, Any] | None = None,
     label: str = "DXAS",
 ) -> dict[str, Any] | None:
+    """Emit a progress update through a reporter or print a fallback line."""
     if progress is None:
         print(
             format_progress_line(

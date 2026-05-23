@@ -50,6 +50,7 @@ def _clip_pixel_range(
     width: int,
     name: str,
 ) -> Tuple[int, int] | None:
+    """Clip an optional pixel range to detector bounds."""
     if pixel_range is None:
         return None
     if len(pixel_range) != 2:
@@ -92,6 +93,7 @@ def _compute_chunk_specs(
     W : int  — detector width in pixels
     """
     def _normalize_specs_batch(specs: np.ndarray) -> np.ndarray:
+        """Normalize a batch of spectra using edge-step or min/max rules."""
         if specs.size == 0:
             return specs
         width = int(specs.shape[1])
@@ -697,6 +699,7 @@ def _save_html_chunk(
     )
 
     def _rough_edge_jump(y: np.ndarray) -> float:
+        """Estimate a robust vertical scale for stacked line offsets."""
         y = np.asarray(y, dtype=float)
         if y.size < 8:
             jump = float(np.nanpercentile(y, 90) - np.nanpercentile(y, 10))
@@ -710,6 +713,7 @@ def _save_html_chunk(
         return jump if np.isfinite(jump) and jump > 1e-9 else 1.0
 
     def _default_offset(lines: list[np.ndarray]) -> float:
+        """Choose a default vertical offset for a list of spectra."""
         if not lines:
             return 1.0
         # Fast rough default: about one-third of the edge jump.
@@ -717,6 +721,7 @@ def _save_html_chunk(
         return max(jump / 3.0, 1e-6)
 
     def _stacked_range(lines: list[np.ndarray], offset: float, scale: float) -> list[float]:
+        """Calculate a y-axis range for stacked spectra at one offset scale."""
         if not lines:
             return [0.0, 1.0]
         y0 = np.asarray(lines[0], dtype=float)
@@ -803,6 +808,7 @@ def _save_html_chunk(
     scale_vals = [0.0, 0.25, 0.5, 1.0, 1.5, 2.0, 3.0]
     if avg_trace_indices or frame_trace_indices:
         def _stack_with_scale(lines: list[np.ndarray], base: float, scale: float) -> list[list[float]]:
+            """Return line arrays shifted by the requested stacking scale."""
             return [(y + (base * scale * k)).tolist() for k, y in enumerate(lines)]
 
         steps = []

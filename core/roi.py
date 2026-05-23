@@ -27,6 +27,7 @@ __all__ = [
 
 
 def _clip_row_range(shape: tuple[int, int], row_range: tuple[int, int]) -> tuple[int, int]:
+    """Clip a row range to image bounds and keep it non-empty."""
     h, _w = shape
     r0, r1 = sorted((int(row_range[0]), int(row_range[1])))
     r0 = int(np.clip(r0, 0, h))
@@ -35,6 +36,7 @@ def _clip_row_range(shape: tuple[int, int], row_range: tuple[int, int]) -> tuple
 
 
 def _tilted_row_bounds(shape: tuple[int, int], spec: Mapping[str, object]) -> tuple[int, int]:
+    """Return the minimal row span needed to contain a tilted-band ROI."""
     h, w = shape
     cols = np.arange(w, dtype=float)
     center0 = float(spec["center_row_at_col0"])
@@ -182,6 +184,7 @@ def roi_row_bounds(
     row_range: Optional[tuple[int, int]] = None,
     roi: Optional[Mapping[str, object]] = None,
 ) -> tuple[int, int]:
+    """Return the clipped row bounds for a row-range or tilted-band ROI."""
     spec = normalize_roi_spec(shape, row_range=row_range, roi=roi)
     bounds = spec["row_bounds"]
     return int(bounds[0]), int(bounds[1])

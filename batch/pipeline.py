@@ -45,6 +45,7 @@ __all__ = ["run_large_quantity_analysis", "run_analysis"]
 
 
 def _resolve_scan(path_or_name: str, data_dir: Path, include_kw: str) -> Path:
+    """Resolve a scan path from an absolute path, data-dir name, or keyword."""
     p = Path(path_or_name)
     if p.is_file():
         return p.resolve()
@@ -65,6 +66,7 @@ def _resolve_scan(path_or_name: str, data_dir: Path, include_kw: str) -> Path:
 
 
 def _resolve_foil(path_or_name: str, data_dir: Path) -> Path:
+    """Resolve a Cu foil path from a path/name or by scanning the data dir."""
     p = Path(path_or_name)
     if p.is_file():
         return p.resolve()
@@ -80,11 +82,13 @@ def _resolve_foil(path_or_name: str, data_dir: Path) -> Path:
 
 
 def _preview_output_dir(scan_path: Path) -> Path:
+    """Return the conventional preview-output directory for a scan file."""
     base = scan_path.with_suffix("")
     return base.parent / f"preliminary_results_{base.name}"
 
 
 def _stage_preview_html(scan_path: Path, analysis_dir: Path, tag: str) -> dict:
+    """Copy preview HTML files into the analysis directory and choose a primary."""
     src_dir = _preview_output_dir(scan_path)
     if not src_dir.exists():
         return {"files": [], "primary": None}
@@ -99,6 +103,7 @@ def _stage_preview_html(scan_path: Path, analysis_dir: Path, tag: str) -> dict:
         return {"files": [], "primary": None}
 
     def _score(p: Path) -> tuple[int, int, float]:
+        """Rank staged preview files by frame count, span, then mtime."""
         stem = p.stem
         n_frames = 0
         span = 0
@@ -119,6 +124,7 @@ def _stage_preview_html(scan_path: Path, analysis_dir: Path, tag: str) -> dict:
 
 
 def _safe_window(window: int, n: int, poly: int) -> int:
+    """Return an odd Savitzky-Golay window valid for ``n`` samples."""
     w = max(int(window), int(poly) + 3)
     if w % 2 == 0:
         w += 1
@@ -137,6 +143,7 @@ def _smooth_spectra(
     spectral_poly: int,
     temporal_window: int,
 ) -> np.ndarray:
+    """Smooth spectra along energy and optionally along frame/time."""
     arr = np.asarray(spectra, dtype=float)
     out = arr.copy()
     if spectral_window > 1 and out.shape[1] >= 5:
@@ -152,6 +159,7 @@ def _auto_pick_peak_centers(
     mean_spec: np.ndarray,
     search_range: tuple[float, float],
 ) -> tuple[float, float]:
+    """Pick two candidate peak centers from a mean spectrum."""
     lo, hi = sorted((float(search_range[0]), float(search_range[1])))
     m = (energy >= lo) & (energy <= hi)
     x = np.asarray(energy[m], dtype=float)
@@ -174,6 +182,7 @@ def _auto_pick_peak_centers(
 
 
 def _peak_intensity(spectra: np.ndarray, energy: np.ndarray, center_eV: float, halfwidth_eV: float) -> np.ndarray:
+    """Return each frame's maximum intensity near a peak center."""
     m = (energy >= center_eV - halfwidth_eV) & (energy <= center_eV + halfwidth_eV)
     if np.count_nonzero(m) < 2:
         idx = int(np.argmin(np.abs(energy - center_eV)))
@@ -185,6 +194,7 @@ def _two_state_metrics(
     spectra: np.ndarray,
     ref_avg_n: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Fit every frame as a mixture of first-state and last-state spectra."""
     n = spectra.shape[0]
     k = int(np.clip(ref_avg_n, 5, max(5, n // 2)))
     s0 = np.mean(spectra[:k], axis=0)
@@ -203,6 +213,7 @@ def _downsample_rows_for_heatmap(
     data: np.ndarray,
     max_rows: int,
 ) -> tuple[np.ndarray, np.ndarray]:
+    """Downsample rows for responsive heatmap rendering."""
     n = data.shape[0]
     if n <= max_rows:
         frame_axis = np.arange(n, dtype=float)
@@ -226,6 +237,7 @@ def _write_interactive_plots(
     tag: str,
     max_heatmap_frames: int,
 ) -> dict:
+    """Write difference-map and ratio/phase Plotly HTML diagnostics."""
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
 
@@ -419,6 +431,7 @@ def _analyze_calibrated_file(
     ref_average_frames: int,
     max_heatmap_frames: int,
 ) -> dict:
+    """Analyze a calibrated spectra HDF5 file and write metrics/plots."""
     with h5py.File(calibrated_h5, "r") as f:
         energy = np.asarray(f["energy"][:], dtype=float)
         spectra = np.asarray(f["spectra"][:], dtype=float)
@@ -502,6 +515,7 @@ def _analyze_calibrated_file(
 
 
 def _write_forward_reverse_compare(forward: dict, reverse: dict, out_dir: Path) -> str:
+    """Write an HTML comparison of forward and reverse scan metrics."""
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
 
@@ -515,6 +529,7 @@ def _write_forward_reverse_compare(forward: dict, reverse: dict, out_dir: Path) 
         peak_halfwidth_eV: float,
         ref_average_frames: int,
     ):
+        """Recompute ratio and residual traces from a calibrated HDF5 file."""
         with h5py.File(path, "r") as f:
             e = np.asarray(f["energy"][:], dtype=float)
             s = np.asarray(f["spectra"][:], dtype=float)
@@ -685,10 +700,13 @@ def _write_summary_dashboard(
     foil_calibration: dict | None,
     manifest: dict,
 ) -> str:
+    """Write the top-level HTML dashboard that embeds all analysis outputs."""
     def _name(p: str | None) -> str:
+        """Return a basename suitable for relative dashboard links."""
         return Path(p).name if p else ""
 
     def _fmt(x: float | None) -> str:
+        """Format optional numeric values for dashboard tables."""
         return "N/A" if x is None else f"{x:.6f}"
 
     forward_metrics = f"""
@@ -1025,6 +1043,7 @@ def run_large_quantity_analysis(
         print(f"Foil calibration report: {foil_calibration['html']}")
 
         def _apply_one(tag: str, data_path: Path, flat_path: Path) -> Path:
+            """Apply the calibration model to one scan or reuse existing output."""
             out_name = f"calibrated_{data_path.stem}.h5"
             out_path = data_dir / out_name
             stage_name = f"{tag}_scan_calibration"
@@ -1233,4 +1252,5 @@ def run_analysis(
     make_previews: bool = True,
     progress: BatchProgressReporter | None = None,
 ) -> dict:
+    """Backward-compatible alias for :func:`run_large_quantity_analysis`."""
     return run_large_quantity_analysis(cfg=cfg, make_previews=make_previews, progress=progress)
