@@ -5,6 +5,9 @@
 *.h5 binary
 *.hdf5 binary
 *.nxs binary
+*.tif binary
+*.tiff binary
+*.cbf binary
 *.png binary
 *.jpg binary
 *.jpeg binary
