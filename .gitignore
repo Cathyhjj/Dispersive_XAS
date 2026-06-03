@@ -29,9 +29,6 @@ tmp_*
 *.hdf5
 *.nxs
 *.nc
-*.tif
-*.tiff
-*.cbf
 output/
 outputs/
 analysis_*/
