@@ -25,8 +25,10 @@ enables instant interactive zoom/pan without leaving the notebook.
 
 from __future__ import annotations
 
+import html
 import json
 import os
+from pathlib import Path
 from typing import Optional, Tuple
 
 import numpy as np
@@ -164,7 +166,7 @@ def plot_spectra_in_chunks(
     start_frame: int = 0,
     end_frame: Optional[int] = None,
     aver_n: int = 1,
-    flat_range: Tuple[int, int] = (180, 230),
+    flat_range: Tuple[int, int] | None = (180, 230),
     norm_x1: int = 180,
     norm_x2: int = 200,
     x1: int = 100,
@@ -211,9 +213,10 @@ def plot_spectra_in_chunks(
         Last frame (exclusive).  Defaults to the total number of frames.
     aver_n : int
         Frames averaged per group in plot 2 (default: 1, i.e. no averaging).
-    flat_range : (int, int)
+    flat_range : (int, int) or None
         Pixel row range ``(fr0, fr1)`` used to spatially average the
-        flat-field (selects the beam footprint rows).
+        flat-field. Use ``None`` with ``roi=None`` to average all detector
+        rows.
     norm_x1, norm_x2 : int
         Legacy one-window min/max normalization bounds. Used only when
         ``pre_edge_norm_range`` and ``post_edge_norm_range`` are not supplied.
@@ -376,7 +379,7 @@ def preview_spectra_html(
     start_frame: int = 0,
     end_frame: Optional[int] = None,
     aver_n: int = 1,
-    flat_range: Tuple[int, int] = (180, 230),
+    flat_range: Tuple[int, int] | None = (180, 230),
     norm_x1: int = 180,
     norm_x2: int = 200,
     chunk_size: int = 1000,
@@ -391,6 +394,13 @@ def preview_spectra_html(
     progress_stage: str = "preview_full_export",
     pre_edge_norm_range: Tuple[int, int] | None = None,
     post_edge_norm_range: Tuple[int, int] | None = None,
+    snapshot_frame: int | None = None,
+    flat_snapshot_frame: int | None = 0,
+    mux_snapshot_frame: int | None = None,
+    data_label: str | None = None,
+    flat_label: str | None = None,
+    data_link: str | None = None,
+    flat_link: str | None = None,
 ) -> None:
     """Generate **three** interactive HTML plots covering **all frames**.
 
@@ -421,8 +431,9 @@ def preview_spectra_html(
         Last frame (exclusive).  Defaults to the total number of frames.
     aver_n : int
         Frames averaged per group in the lines-averaged plot (default: 1).
-    flat_range : (int, int)
+    flat_range : (int, int) or None
         Pixel row range ``(fr0, fr1)`` for spatial flat-field averaging.
+        Use ``None`` with ``roi=None`` to average all detector rows.
     norm_x1, norm_x2 : int
         Legacy one-window min/max normalization bounds. Used only when
         ``pre_edge_norm_range`` and ``post_edge_norm_range`` are not supplied.
@@ -478,6 +489,19 @@ def preview_spectra_html(
         dtype=np.float32,
     )
     flat_avg = np.average(flat[:, fr0:fr1, :], axis=0)  # (fr1-fr0, W)
+    if snapshot_frame is None:
+        snapshot_frame = start_frame
+    snapshot_frame = int(np.clip(int(snapshot_frame), 0, int(data.shape[0]) - 1))
+    flat_snapshot_frame = 0 if flat_snapshot_frame is None else int(flat_snapshot_frame)
+    flat_snapshot_frame = int(np.clip(flat_snapshot_frame, 0, int(flat.shape[0]) - 1))
+    mux_snapshot_frame = snapshot_frame if mux_snapshot_frame is None else int(mux_snapshot_frame)
+    mux_snapshot_frame = int(np.clip(mux_snapshot_frame, 0, int(data.shape[0]) - 1))
+    snapshot_data = np.asarray(data[snapshot_frame], dtype=np.float32)
+    snapshot_flat = np.asarray(flat[flat_snapshot_frame], dtype=np.float32)
+    mux_data = np.asarray(data[mux_snapshot_frame], dtype=np.float32)
+    mux_flat = np.asarray(flat, dtype=np.float32).mean(axis=0)
+    snapshot_mux = np.log(np.clip(mux_flat, 1e-6, None) / np.clip(mux_data, 1e-6, None))
+    snapshot_mux[~np.isfinite(snapshot_mux)] = 0.0
 
     # Accumulate computed spectra across all chunks (raw images are NOT kept).
     all_per_frame: list = []
@@ -575,6 +599,17 @@ def preview_spectra_html(
         heatmap_zmin=0.0,
         heatmap_zmax=heatmap_zmax,
         norm_label=norm_label,
+        snapshot_data=snapshot_data,
+        snapshot_flat=snapshot_flat,
+        snapshot_mux=snapshot_mux,
+        snapshot_data_frame=snapshot_frame,
+        snapshot_flat_frame=flat_snapshot_frame,
+        snapshot_mux_frame=mux_snapshot_frame,
+        snapshot_data_label=data_label or os.path.basename(data_path),
+        snapshot_flat_label=flat_label or os.path.basename(flat_path),
+        snapshot_mux_label="log(mean flat / data)",
+        snapshot_data_link=data_link or data_path,
+        snapshot_flat_link=flat_link or flat_path,
     )
     emit_progress(
         progress,
@@ -617,6 +652,17 @@ def _save_html_chunk(
     heatmap_zmin: float = 0.0,
     heatmap_zmax: float | None = None,
     norm_label: str | None = None,
+    snapshot_data: np.ndarray | None = None,
+    snapshot_flat: np.ndarray | None = None,
+    snapshot_mux: np.ndarray | None = None,
+    snapshot_data_frame: int | None = None,
+    snapshot_flat_frame: int | None = None,
+    snapshot_mux_frame: int | None = None,
+    snapshot_data_label: str | None = None,
+    snapshot_flat_label: str | None = None,
+    snapshot_mux_label: str | None = None,
+    snapshot_data_link: str | None = None,
+    snapshot_flat_link: str | None = None,
 ) -> list:
     """Save ONE combined interactive HTML with three stacked subplots.
 
@@ -888,6 +934,140 @@ def _save_html_chunk(
     )
     plot_div_id = "dxas_preview_plot"
     fig_json = fig.to_json()
+    snapshot_div = ""
+    snapshot_links_div = ""
+    snapshot_script = ""
+    if snapshot_data is not None and snapshot_flat is not None:
+        def _file_href(path_or_url: str | None) -> str:
+            if not path_or_url:
+                return ""
+            value = os.fspath(path_or_url)
+            if "://" in value:
+                return value
+            try:
+                return Path(value).expanduser().resolve().as_uri()
+            except Exception:
+                return ""
+
+        def _file_path_text(path_or_url: str | None) -> str:
+            if not path_or_url:
+                return ""
+            value = os.fspath(path_or_url)
+            if "://" in value:
+                return value
+            try:
+                return str(Path(value).expanduser().resolve())
+            except Exception:
+                return value
+
+        def _anchor(label: str | None, path_or_url: str | None) -> str:
+            safe_label = html.escape(str(label or "open file"))
+            href = _file_href(path_or_url)
+            if not href:
+                return safe_label
+            return f'<a href="{html.escape(href, quote=True)}">{safe_label}</a>'
+
+        data_title = html.escape(str(snapshot_data_label or ""))
+        flat_title = html.escape(str(snapshot_flat_label or ""))
+        mux_title = html.escape(str(snapshot_mux_label or "log(mean flat / data)"))
+        snapshot_cols = 3 if snapshot_mux is not None else 2
+        subplot_titles = [
+            f"<b>Data frame {snapshot_data_frame}</b><br>{data_title}",
+            f"<b>Flat frame {snapshot_flat_frame}</b><br>{flat_title}",
+        ]
+        if snapshot_mux is not None:
+            subplot_titles.append(f"<b>Mux frame {snapshot_mux_frame}</b><br>{mux_title}")
+        snapshot_fig = make_subplots(
+            rows=1,
+            cols=snapshot_cols,
+            subplot_titles=subplot_titles,
+            horizontal_spacing=0.06,
+        )
+
+        def _snapshot_limits(image: np.ndarray) -> tuple[float, float]:
+            finite = np.asarray(image, dtype=float)
+            finite = finite[np.isfinite(finite)]
+            if finite.size == 0:
+                return 0.0, 1.0
+            lo, hi = np.nanpercentile(finite, [1, 99])
+            if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+                lo = float(np.nanmin(finite))
+                hi = float(np.nanmax(finite))
+            if hi <= lo:
+                hi = lo + 1.0
+            return float(lo), float(hi)
+
+        data_vmin, data_vmax = _snapshot_limits(snapshot_data)
+        flat_vmin, flat_vmax = _snapshot_limits(snapshot_flat)
+        mux_vmin, mux_vmax = _snapshot_limits(snapshot_mux) if snapshot_mux is not None else (0.0, 1.0)
+        snapshot_fig.add_trace(
+            go.Heatmap(
+                z=np.asarray(snapshot_data, dtype=float),
+                colorscale=cmap_name,
+                zmin=data_vmin,
+                zmax=data_vmax,
+                colorbar=dict(title="Data", x=0.28 if snapshot_cols == 3 else 0.46, thickness=8),
+                hovertemplate="x=%{x}<br>y=%{y}<br>intensity=%{z}<extra></extra>",
+            ),
+            row=1,
+            col=1,
+        )
+        snapshot_fig.add_trace(
+            go.Heatmap(
+                z=np.asarray(snapshot_flat, dtype=float),
+                colorscale=cmap_name,
+                zmin=flat_vmin,
+                zmax=flat_vmax,
+                colorbar=dict(title="Flat", x=0.64 if snapshot_cols == 3 else 1.02, thickness=8),
+                hovertemplate="x=%{x}<br>y=%{y}<br>intensity=%{z}<extra></extra>",
+            ),
+            row=1,
+            col=2,
+        )
+        if snapshot_mux is not None:
+            snapshot_fig.add_trace(
+                go.Heatmap(
+                    z=np.asarray(snapshot_mux, dtype=float),
+                    colorscale=cmap_name,
+                    zmin=mux_vmin,
+                    zmax=mux_vmax,
+                    colorbar=dict(title="Mux", x=1.02, thickness=8),
+                    hovertemplate="x=%{x}<br>y=%{y}<br>mux=%{z}<extra></extra>",
+                ),
+                row=1,
+                col=3,
+            )
+        snapshot_fig.update_xaxes(title_text="Detector x pixel")
+        snapshot_fig.update_yaxes(title_text="Detector y pixel")
+        snapshot_fig.update_layout(
+            title=dict(
+                text="Raw Detector Snapshots",
+                font=dict(size=13),
+                y=0.99,
+                yanchor="top",
+            ),
+            height=560,
+            autosize=True,
+            font=dict(size=11),
+            margin=dict(t=95, b=50, l=70, r=80),
+            showlegend=False,
+        )
+        snapshot_div_id = "dxas_snapshot_plot"
+        snapshot_div = f'<div id="{snapshot_div_id}" style="width:100%; margin-top: 16px;"></div>'
+        data_path_text = _file_path_text(snapshot_data_link)
+        flat_path_text = _file_path_text(snapshot_flat_link)
+        snapshot_links_div = f"""
+    <div class="snapshot-links">
+      <div><b>Data file:</b> {_anchor(snapshot_data_label, snapshot_data_link)} <code>{html.escape(data_path_text)}</code></div>
+      <div><b>Flat file:</b> {_anchor(snapshot_flat_label, snapshot_flat_link)} <code>{html.escape(flat_path_text)}</code></div>
+      <div><b>Mux frame:</b> computed from data frame {snapshot_mux_frame} and mean flat image.</div>
+    </div>"""
+        snapshot_script = (
+            f"const snapshotFig = {snapshot_fig.to_json()};\n"
+            f"    const snapshotGd = document.getElementById(\"{snapshot_div_id}\");\n"
+            "    Plotly.newPlot(snapshotGd, snapshotFig.data, snapshotFig.layout, "
+            "{responsive: true, displaylogo: false});"
+        )
     x_lo_default = int(x1)
     x_hi_default = int(max(x1, col_end - 1))
     f_lo_default = int(chunk_start)
@@ -923,11 +1103,29 @@ def _save_html_chunk(
     input {{ width: 92px; padding: 4px 6px; font-size: 12px; }}
     button {{ padding: 4px 8px; font-size: 12px; cursor: pointer; }}
     .hint {{ font-size: 11px; color: #666; margin-top: 6px; }}
+    .snapshot-links {{
+      margin: 8px 0 12px 0;
+      padding: 10px;
+      border: 1px solid #d0d7de;
+      border-radius: 8px;
+      background: #fafbfc;
+      font-size: 12px;
+      line-height: 1.5;
+    }}
+    .snapshot-links code {{
+      display: block;
+      margin-top: 2px;
+      color: #555;
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }}
   </style>
 </head>
 <body>
   <div id="wrap">
     <div id="{plot_div_id}" style="width:100%;"></div>
+    {snapshot_div}
+    {snapshot_links_div}
     <div id="controls">
       <div class="ctrl">
         <h4>Heatmap color scale</h4>
@@ -1045,6 +1243,7 @@ def _save_html_chunk(
     }}
 
     Plotly.newPlot(gd, fig.data, fig.layout, {{responsive: true, displaylogo: false}}).then(() => {{
+      {snapshot_script}
       setDefaults();
       applyColorRange();
       applyFrameRange();

@@ -94,7 +94,8 @@ detector edges.
 ### `normalize_roi_spec(shape, row_range=None, roi=None)`
 
 Validates and normalizes row-range and tilted-band ROI dictionaries. Adds
-`row_bounds` for downstream chunked processing.
+`row_bounds` for downstream chunked processing. When `row_range=None` and
+`roi=None`, all detector rows are used.
 
 ### `build_roi_mask(shape, row_range=None, roi=None)`
 
@@ -103,11 +104,14 @@ Returns a boolean mask for the requested ROI.
 ### `prepare_roi_weights(shape, row_range=None, roi=None, dtype=np.float32)`
 
 Returns `(roi_spec, row_bounds, row_weights, col_weight_sum)` for efficient
-column-wise weighted averaging.
+column-wise weighted averaging. Tilted-band ROIs use fractional pixel-overlap
+weights at the ROI boundaries, which reduces row-boundary aliasing when the
+shear is adjusted. `build_roi_mask()` remains boolean for compatibility.
 
 ### `roi_weighted_column_mean(image, row_range=None, roi=None)`
 
 Extracts a spectrum from a 2-D image or a spectrum per frame from a 3-D stack.
+When no ROI settings are supplied, it averages all detector rows.
 
 ### `fit_tilted_band_roi(image, ...)`
 

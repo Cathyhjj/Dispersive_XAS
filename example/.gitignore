@@ -6,6 +6,9 @@ preliminary_results_*/
 *.h5
 *.hdf5
 *.nxs
+*.tif
+*.tiff
+*.cbf
 *.html
 *.csv
 *.json

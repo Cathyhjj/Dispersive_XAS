@@ -111,7 +111,8 @@ def normalize_roi_spec(
     shape:
         Image shape ``(rows, cols)``.
     row_range:
-        Backward-compatible horizontal row band.
+        Backward-compatible horizontal row band. When both ``row_range`` and
+        ``roi`` are ``None``, all detector rows are used.
     roi:
         Optional ROI mapping. Supported kinds:
         - ``{"kind": "row_range", "row_start": ..., "row_stop": ...}``
@@ -119,7 +120,7 @@ def normalize_roi_spec(
     """
     if roi is None:
         if row_range is None:
-            raise ValueError("Either row_range or roi must be provided.")
+            row_range = (0, int(shape[0]))
         r0, r1 = _clip_row_range(shape, row_range)
         return {
             "kind": "row_range",
@@ -235,6 +236,34 @@ def build_roi_mask(
     return (rows >= (center - half_width)) & (rows < (center + half_width + 1.0))
 
 
+def _build_roi_weight_array(
+    shape: tuple[int, int],
+    row_range: Optional[tuple[int, int]] = None,
+    roi: Optional[Mapping[str, object]] = None,
+    dtype: np.dtype | type = np.float32,
+) -> np.ndarray:
+    """Build vertical ROI weights, anti-aliased for tilted-band boundaries."""
+    h, w = shape
+    spec = normalize_roi_spec(shape, row_range=row_range, roi=roi)
+
+    if spec["kind"] == "row_range":
+        weights = np.zeros((h, w), dtype=dtype)
+        weights[int(spec["row_start"]) : int(spec["row_stop"]), :] = 1.0
+        return weights
+
+    rows = np.arange(h, dtype=float)[:, None]
+    cols = np.arange(w, dtype=float)[None, :]
+    center = float(spec["center_row_at_col0"]) + float(spec["slope_per_col"]) * cols
+    half_width = float(spec["half_width"])
+
+    band_top = center - half_width
+    band_bottom = center + half_width
+    pixel_top = rows - 0.5
+    pixel_bottom = rows + 0.5
+    overlap = np.minimum(pixel_bottom, band_bottom) - np.maximum(pixel_top, band_top)
+    return np.clip(overlap, 0.0, 1.0).astype(dtype, copy=False)
+
+
 def prepare_roi_weights(
     shape: tuple[int, int],
     row_range: Optional[tuple[int, int]] = None,
@@ -244,8 +273,12 @@ def prepare_roi_weights(
     """Return ``(roi_spec, row_bounds, row_weights, col_weight_sum)``."""
     roi_spec = normalize_roi_spec(shape, row_range=row_range, roi=roi)
     r0, r1 = roi_row_bounds(shape, roi=roi_spec)
-    row_weights = build_roi_mask(shape, roi=roi_spec)[r0:r1, :].astype(dtype, copy=False)
-    col_weight_sum = np.clip(row_weights.sum(axis=0, keepdims=True), 1.0, None).astype(dtype, copy=False)
+    row_weights = _build_roi_weight_array(shape, roi=roi_spec, dtype=dtype)[r0:r1, :]
+    eps = np.finfo(np.dtype(dtype)).eps
+    col_weight_sum = np.clip(row_weights.sum(axis=0, keepdims=True), eps, None).astype(
+        dtype,
+        copy=False,
+    )
     return roi_spec, (r0, r1), row_weights, col_weight_sum
 
 
