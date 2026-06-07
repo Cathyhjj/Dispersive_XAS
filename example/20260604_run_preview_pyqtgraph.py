@@ -27,7 +27,7 @@ import numpy as np
 SCRIPT_DIR = Path(__file__).resolve().parent
 DATA_DIR_DEFAULT = SCRIPT_DIR / "data"
 BAD_FILES_DEFAULT = SCRIPT_DIR / "bad_files.txt"
-ROI_JSON_DEFAULT = SCRIPT_DIR / "saved_rois" / "Pt_L3_roi.json"
+ROI_JSON_DEFAULT = SCRIPT_DIR / "saved_rois" / "run_preview_selected_roi.json"
 SAFE_PLUGIN_DIR = SCRIPT_DIR / ".hdf5_plugin"
 EPICS_UNIX_OFFSET = 631_152_000
 
@@ -64,9 +64,13 @@ if str(PYTHON_CODES_DIR) not in sys.path:
 from Dispersive_XAS.core.roi import (  # noqa: E402
     infer_tilted_band_roi_from_paths,
     load_roi_json,
+    make_tilted_band_roi,
+    normalize_roi_spec,
     prepare_roi_weights,
     roi_boundary_rows,
     roi_weighted_column_mean,
+    save_roi_json,
+    tilted_band_controls_from_roi,
 )
 from Dispersive_XAS.web.batch import _compute_chunk_specs  # noqa: E402
 
@@ -374,6 +378,8 @@ def entry_summary(entry: ExportEntry) -> dict[str, object]:
 def roi_json_path_for_entry(args, entry: ExportEntry) -> Path | None:
     if args.roi_json is None:
         return None
+    if str(args.roi_json).strip().lower() in {"", "none", "null", "disabled"}:
+        return None
     raw = Path(args.roi_json).expanduser()
     if raw.is_absolute():
         return raw.resolve()
@@ -411,6 +417,26 @@ def infer_tilted_roi_direct(
     )
 
 
+def load_mux_preview_frame(
+    data_path: Path,
+    flat_path: Path,
+    frame_index: int,
+) -> tuple[np.ndarray, int]:
+    """Load one representative mux image for manual ROI selection."""
+    with h5py.File(flat_path, "r") as flat_file:
+        flat_avg = np.asarray(detector_dataset(flat_file)[:], dtype=np.float32).mean(axis=0)
+
+    with h5py.File(data_path, "r") as data_file:
+        data_ds = detector_dataset(data_file)
+        frame_index = int(np.clip(int(frame_index), 0, int(data_ds.shape[0]) - 1))
+        data_frame = np.asarray(data_ds[frame_index], dtype=np.float32)
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        mux_frame = np.log(np.clip(flat_avg, 1e-6, None) / np.clip(data_frame, 1e-6, None))
+    mux_frame[~np.isfinite(mux_frame)] = 0.0
+    return mux_frame, frame_index
+
+
 def ensure_legacy_lambda_view(source_path: Path, view_path: Path) -> Path:
     source_path = Path(source_path).resolve()
     view_path = Path(view_path).resolve()
@@ -427,17 +453,21 @@ def ensure_legacy_lambda_view(source_path: Path, view_path: Path) -> Path:
     return view_path
 
 
-def selected_roi_for_pair(args, pair: BatchPair) -> dict[str, object] | None:
+def row_range_roi_spec(row_range: Sequence[int]) -> dict[str, object]:
+    return {
+        "kind": "row_range",
+        "row_start": int(row_range[0]),
+        "row_stop": int(row_range[1]),
+        "row_bounds": [int(row_range[0]), int(row_range[1])],
+    }
+
+
+def initial_roi_for_pair(args, pair: BatchPair) -> dict[str, object] | None:
     roi_json_path = roi_json_path_for_entry(args, pair.data_entry)
     if args.use_saved_roi and roi_json_path is not None and roi_json_path.exists():
         return load_roi_json(roi_json_path)
     if args.row_range is not None:
-        return {
-            "kind": "row_range",
-            "row_start": int(args.row_range[0]),
-            "row_stop": int(args.row_range[1]),
-            "row_bounds": [int(args.row_range[0]), int(args.row_range[1])],
-        }
+        return row_range_roi_spec(args.row_range)
     if args.use_tilted_roi:
         return infer_tilted_roi_direct(
             pair.data_entry.path,
@@ -451,6 +481,54 @@ def selected_roi_for_pair(args, pair: BatchPair) -> dict[str, object] | None:
             median_size=args.median_size,
         )
     return None
+
+
+def select_roi_for_pair_interactive(
+    args,
+    pair: BatchPair,
+    initial_roi: dict[str, object] | None = None,
+    fallback_on_cancel: bool = True,
+) -> dict[str, object] | None:
+    """Open a PyQtGraph tilted-band selector and return the chosen ROI."""
+    mux_preview, preview_frame_index = load_mux_preview_frame(
+        pair.data_entry.path,
+        pair.flat_entry.path,
+        args.snapshot_frame,
+    )
+    roi_json_path = roi_json_path_for_entry(args, pair.data_entry)
+    title = f"ROI selector - {pair.data_entry.name} frame {preview_frame_index}"
+    editor = select_tilted_band_roi_pyqtgraph(
+        mux_preview,
+        initial_roi=initial_roi,
+        title=title,
+        save_path=roi_json_path,
+        show=True,
+        block=True,
+    )
+    if not editor.accepted:
+        return initial_roi if fallback_on_cancel else None
+    if args.save_selected_roi and roi_json_path is not None:
+        editor.save(
+            metadata={
+                "data_file": str(pair.data_entry.path),
+                "flat_file": str(pair.flat_entry.path),
+                "preview_frame": int(preview_frame_index),
+            }
+        )
+    return editor.get_spec()
+
+
+def selected_roi_for_pair(
+    args,
+    pair: BatchPair,
+    selected_roi_override: dict[str, object] | None = None,
+) -> dict[str, object] | None:
+    if selected_roi_override is not None:
+        return selected_roi_override
+    initial_roi = initial_roi_for_pair(args, pair)
+    if args.select_roi:
+        return select_roi_for_pair_interactive(args, pair, initial_roi=initial_roi)
+    return initial_roi
 
 
 def infer_norm_range(
@@ -491,8 +569,16 @@ def infer_norm_range(
     return int(best_start), int(best_start + int(window))
 
 
-def compute_preview(pair: BatchPair, args) -> PreviewResult:
-    selected_roi = selected_roi_for_pair(args, pair)
+def compute_preview(
+    pair: BatchPair,
+    args,
+    selected_roi_override: dict[str, object] | None = None,
+) -> PreviewResult:
+    selected_roi = selected_roi_for_pair(
+        args,
+        pair,
+        selected_roi_override=selected_roi_override,
+    )
     row_range: tuple[int, int] | None = None
     roi: dict[str, object] | None = None
     if selected_roi is not None:
@@ -603,6 +689,336 @@ def require_pyqtgraph():
             f"Original import error: {type(exc).__name__}: {exc}"
         ) from exc
     return pg, QtCore, QtGui, QtWidgets
+
+
+def _qt_exec(obj):
+    exec_fn = getattr(obj, "exec", None) or getattr(obj, "exec_", None)
+    if exec_fn is None:
+        raise RuntimeError("Qt object does not expose exec/exec_.")
+    return exec_fn()
+
+
+def _display_image_and_limits(img, q_low: float = 1.0, q_high: float = 99.0):
+    arr = np.asarray(img, dtype=float)
+    finite = arr[np.isfinite(arr)]
+    if finite.size == 0:
+        return np.zeros_like(arr, dtype=float), 0.0, 1.0
+    lo, hi = np.nanpercentile(finite, [q_low, q_high])
+    if not np.isfinite(lo) or not np.isfinite(hi):
+        lo = float(np.nanmin(finite))
+        hi = float(np.nanmax(finite))
+    if hi <= lo:
+        center = float(finite[0])
+        span = max(1.0, abs(center) * 1e-3)
+        lo = center - span
+        hi = center + span
+    disp = np.array(arr, copy=True, dtype=float)
+    disp[~np.isfinite(disp)] = lo
+    return disp, float(lo), float(hi)
+
+
+class PyQtGraphTiltedBandSelector:
+    """PyQtGraph selector for a sheared rectangular tilted-band ROI."""
+
+    def __init__(self, image, initial_roi=None, title: str = "", save_path=None):
+        self.image = np.asarray(image, dtype=float)
+        if self.image.ndim != 2:
+            raise ValueError("PyQtGraphTiltedBandSelector expects a 2-D image.")
+        self.title = title or "DXAS tilted-band ROI selector"
+        self.save_path = None if save_path is None else Path(save_path).expanduser().resolve()
+        self.roi = self._normalize_initial_roi(initial_roi)
+        self.accepted = False
+
+        self._window = None
+        self._image_plot = None
+        self._center_roi = None
+        self._top_curve = None
+        self._bottom_curve = None
+        self._spectrum_curve = None
+        self._height_spin = None
+        self._path_edit = None
+        self._status_label = None
+        self._syncing = False
+
+    def _normalize_initial_roi(self, initial_roi):
+        h, _w = self.image.shape
+        if initial_roi is None:
+            center = 0.5 * max(0.0, float(h - 1))
+            return make_tilted_band_roi(
+                self.image.shape,
+                left_center_row=center,
+                right_center_row=center,
+                half_width=max(4.0, float(h) * 0.06),
+            )
+        return normalize_roi_spec(self.image.shape, roi=initial_roi)
+
+    def _summary_text(self):
+        left, right, half_width = tilted_band_controls_from_roi(self.image.shape, roi=self.roi)
+        height = 2.0 * float(half_width)
+        slope = float(self.roi.get("slope_per_col", 0.0))
+        bounds = list(self.roi.get("row_bounds", []))
+        return (
+            f"ROI: left={left:.1f}, right={right:.1f}, "
+            f"height={height:.1f} px, half_width={half_width:.1f}, "
+            f"slope={slope:.4f}, row_bounds={bounds}"
+        )
+
+    def _line_endpoints(self):
+        h, w = self.image.shape
+        if self._center_roi is None:
+            left, right, _half_width = tilted_band_controls_from_roi(self.image.shape, roi=self.roi)
+            return (0.0, float(left)), (float(max(1, w - 1)), float(right))
+
+        try:
+            view_box = self._image_plot.getViewBox() if self._image_plot is not None else None
+            points = []
+            for _handle, scene_pos in self._center_roi.getSceneHandlePositions()[:2]:
+                pos = view_box.mapSceneToView(scene_pos) if view_box is not None else scene_pos
+                points.append((float(pos.x()), float(pos.y())))
+            if len(points) == 2:
+                return points[0], points[1]
+        except Exception:
+            pass
+
+        try:
+            points = []
+            for _handle, local_pos in self._center_roi.getLocalHandlePositions()[:2]:
+                pos = self._center_roi.mapToParent(local_pos)
+                points.append((float(pos.x()), float(pos.y())))
+            if len(points) == 2:
+                return points[0], points[1]
+        except Exception:
+            pass
+
+        left, right, _half_width = tilted_band_controls_from_roi(self.image.shape, roi=self.roi)
+        return (0.0, float(left)), (float(max(1, w - 1)), float(right))
+
+    def _sync_roi_from_graphics(self):
+        if self._syncing:
+            return
+        h, w = self.image.shape
+        (x0, y0), (x1, y1) = self._line_endpoints()
+        if x1 < x0:
+            x0, y0, x1, y1 = x1, y1, x0, y0
+        if abs(x1 - x0) <= 1e-9:
+            left = float(y0)
+            right = float(y1)
+        else:
+            slope = (float(y1) - float(y0)) / (float(x1) - float(x0))
+            left = float(y0) + slope * (0.0 - float(x0))
+            right = float(y0) + slope * (float(w - 1) - float(x0))
+        max_row = max(0.0, float(h - 1))
+        left = float(np.clip(left, 0.0, max_row))
+        right = float(np.clip(right, 0.0, max_row))
+        half_width = float(self.roi.get("half_width", 1.0))
+        if self._height_spin is not None:
+            half_width = max(0.5, 0.5 * float(self._height_spin.value()))
+        self.roi = make_tilted_band_roi(self.image.shape, left, right, half_width)
+
+    def _refresh(self):
+        self._sync_roi_from_graphics()
+        cols, top, bottom = roi_boundary_rows(self.image.shape, roi=self.roi)
+        spec = roi_weighted_column_mean(self.image, roi=self.roi)
+        if self._height_spin is not None:
+            self._syncing = True
+            self._height_spin.setValue(float(2.0 * float(self.roi.get("half_width", 1.0))))
+            self._syncing = False
+        if self._top_curve is not None:
+            self._top_curve.setData(cols, top)
+        if self._bottom_curve is not None:
+            self._bottom_curve.setData(cols, bottom)
+        if self._spectrum_curve is not None:
+            self._spectrum_curve.setData(np.arange(self.image.shape[1], dtype=float), spec)
+        if self._status_label is not None:
+            self._status_label.setText(self._summary_text())
+
+    def _on_graphics_changed(self):
+        if not self._syncing:
+            self._refresh()
+
+    def _on_height_changed(self, _value):
+        if not self._syncing:
+            self._refresh()
+
+    def get_spec(self):
+        self._sync_roi_from_graphics()
+        return normalize_roi_spec(self.image.shape, roi=self.roi)
+
+    def save(self, path=None, metadata=None):
+        out_path = Path(path or self.save_path).expanduser() if path or self.save_path else None
+        if out_path is None:
+            raise ValueError("No ROI JSON path was provided.")
+        payload_meta = {"shape": [int(self.image.shape[0]), int(self.image.shape[1])]}
+        if metadata:
+            payload_meta.update(metadata)
+        return save_roi_json(out_path, self.get_spec(), metadata=payload_meta)
+
+    def _save_from_gui(self, close_after: bool = False, accept_after: bool = False):
+        try:
+            path_text = self._path_edit.text().strip() if self._path_edit is not None else ""
+            saved = self.save(path=path_text or None)
+            if self._status_label is not None:
+                self._status_label.setText(f"Saved ROI JSON: {saved}")
+            if accept_after:
+                self.accepted = True
+            if close_after and self._window is not None:
+                self._window.close()
+        except Exception as exc:
+            if self._status_label is not None:
+                self._status_label.setText(f"Save failed: {exc}")
+
+    def _accept_from_gui(self):
+        self._sync_roi_from_graphics()
+        self.accepted = True
+        if self._window is not None:
+            self._window.close()
+
+    def launch(self, show: bool = True, block: bool = True):
+        if not show:
+            return self
+        pg, QtCore, _QtGui, QtWidgets = require_pyqtgraph()
+
+        app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+        try:
+            pg.setConfigOptions(imageAxisOrder="row-major")
+        except Exception:
+            pass
+
+        h, w = self.image.shape
+        left, right, half_width = tilted_band_controls_from_roi(self.image.shape, roi=self.roi)
+        disp, zmin, zmax = _display_image_and_limits(self.image)
+
+        window = QtWidgets.QMainWindow()
+        window.setWindowTitle(self.title)
+        attr = getattr(QtCore.Qt, "WA_DeleteOnClose", None)
+        if attr is None and hasattr(QtCore.Qt, "WidgetAttribute"):
+            attr = QtCore.Qt.WidgetAttribute.WA_DeleteOnClose
+        if attr is not None:
+            window.setAttribute(attr, True)
+
+        central = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(central)
+        graphics = pg.GraphicsLayoutWidget()
+        layout.addWidget(graphics, 1)
+
+        image_plot = graphics.addPlot(row=0, col=0, title="Mux image with draggable ROI center line")
+        image_plot.setLabel("bottom", "Detector column")
+        image_plot.setLabel("left", "Detector row")
+        image_plot.invertY(True)
+        try:
+            image_item = pg.ImageItem(axisOrder="row-major")
+        except TypeError:
+            image_item = pg.ImageItem()
+        image_item.setImage(disp, levels=(zmin, zmax), autoLevels=False)
+        try:
+            image_item.setRect(QtCore.QRectF(0, 0, float(w), float(h)))
+        except Exception:
+            pass
+        image_plot.addItem(image_item)
+        histogram_lut = pg.HistogramLUTItem(image=image_item)
+        histogram_lut.setLevels(zmin, zmax)
+        try:
+            histogram_lut.gradient.loadPreset("magma")
+        except Exception:
+            pass
+        graphics.addItem(histogram_lut, row=0, col=1)
+        try:
+            graphics.ci.layout.setColumnMaximumWidth(1, 120)
+        except Exception:
+            pass
+
+        spectrum_plot = graphics.addPlot(row=1, col=0, title="ROI vertical average spectrum")
+        spectrum_plot.setLabel("bottom", "Detector column")
+        spectrum_plot.setLabel("left", "Mean mux")
+
+        top_curve = image_plot.plot([], [], pen=pg.mkPen((0, 255, 255), width=2))
+        bottom_curve = image_plot.plot([], [], pen=pg.mkPen((0, 255, 255), width=2))
+        try:
+            fill = pg.FillBetweenItem(top_curve, bottom_curve, brush=pg.mkBrush(0, 255, 255, 45))
+            image_plot.addItem(fill)
+        except Exception:
+            pass
+        spectrum_curve = spectrum_plot.plot([], [], pen=pg.mkPen((60, 140, 255), width=2))
+        center_roi = pg.LineSegmentROI(
+            [[0.0, left], [float(max(1, w - 1)), right]],
+            pen=pg.mkPen("w", width=2),
+        )
+        image_plot.addItem(center_roi)
+
+        controls = QtWidgets.QHBoxLayout()
+        controls.addWidget(QtWidgets.QLabel("ROI height"))
+        height_spin = QtWidgets.QDoubleSpinBox()
+        height_spin.setRange(1.0, max(2.0, float(h)))
+        height_spin.setSingleStep(1.0)
+        height_spin.setDecimals(1)
+        height_spin.setValue(float(2.0 * half_width))
+        height_spin.setToolTip("Full vertical height of the cyan ROI band in detector pixels")
+        controls.addWidget(height_spin)
+        controls.addWidget(QtWidgets.QLabel("ROI JSON"))
+        path_edit = QtWidgets.QLineEdit("" if self.save_path is None else str(self.save_path))
+        controls.addWidget(path_edit, 1)
+        use_button = QtWidgets.QPushButton("Use ROI")
+        save_button = QtWidgets.QPushButton("Save ROI JSON")
+        save_use_button = QtWidgets.QPushButton("Save and use")
+        cancel_button = QtWidgets.QPushButton("Cancel")
+        controls.addWidget(use_button)
+        controls.addWidget(save_button)
+        controls.addWidget(save_use_button)
+        controls.addWidget(cancel_button)
+        layout.addLayout(controls)
+
+        status_label = QtWidgets.QLabel(self._summary_text())
+        layout.addWidget(status_label)
+        help_label = QtWidgets.QLabel(
+            "Drag the colorbar level handles to adjust vmin/vmax; drag the white line "
+            "to adjust ROI center/slope; use ROI height to widen or shrink the band."
+        )
+        layout.addWidget(help_label)
+        window.setCentralWidget(central)
+        window.resize(1200, 900)
+
+        self._window = window
+        self._image_plot = image_plot
+        self._center_roi = center_roi
+        self._top_curve = top_curve
+        self._bottom_curve = bottom_curve
+        self._spectrum_curve = spectrum_curve
+        self._height_spin = height_spin
+        self._path_edit = path_edit
+        self._status_label = status_label
+
+        center_roi.sigRegionChanged.connect(self._on_graphics_changed)
+        height_spin.valueChanged.connect(self._on_height_changed)
+        use_button.clicked.connect(self._accept_from_gui)
+        save_button.clicked.connect(lambda: self._save_from_gui(close_after=False, accept_after=False))
+        save_use_button.clicked.connect(lambda: self._save_from_gui(close_after=True, accept_after=True))
+        cancel_button.clicked.connect(window.close)
+
+        self._refresh()
+        window.show()
+        window.raise_()
+        if block:
+            loop = QtCore.QEventLoop()
+            window.destroyed.connect(loop.quit)
+            _qt_exec(loop)
+        return self
+
+
+def select_tilted_band_roi_pyqtgraph(
+    image,
+    initial_roi=None,
+    title: str = "",
+    save_path=None,
+    show: bool = True,
+    block: bool = True,
+):
+    editor = PyQtGraphTiltedBandSelector(
+        image,
+        initial_roi=initial_roi,
+        title=title,
+        save_path=save_path,
+    )
+    return editor.launch(show=show, block=block)
 
 
 def get_colormap(pg, name: str):
@@ -822,6 +1238,7 @@ class PreviewWindow:
         self.skipped = list(skipped)
         self.pg = pg
         self.QtWidgets = QtWidgets
+        self.selected_rois_by_index: dict[int, dict[str, object]] = {}
 
         self.window = QtWidgets.QMainWindow()
         self.window.setWindowTitle("DXAS Batch Preview - PyQtGraph")
@@ -841,6 +1258,10 @@ class PreviewWindow:
             )
         controls.addWidget(self.combo, stretch=1)
 
+        self.choose_roi_button = QtWidgets.QPushButton("Choose ROI")
+        self.choose_roi_button.clicked.connect(self.choose_roi_for_selected)
+        controls.addWidget(self.choose_roi_button)
+
         self.load_button = QtWidgets.QPushButton("Load Preview")
         self.load_button.clicked.connect(self.load_selected)
         controls.addWidget(self.load_button)
@@ -858,6 +1279,39 @@ class PreviewWindow:
         text.setPlainText(build_summary_text(self.pairs, self.skipped, result=result))
         self.tabs.addTab(text, "Summary")
 
+    def choose_roi_for_selected(self):
+        index = int(self.combo.currentData())
+        pair = self.pairs[index]
+        initial_roi = self.selected_rois_by_index.get(index)
+        if initial_roi is None:
+            initial_roi = initial_roi_for_pair(self.args, pair)
+        self.status_label.setText(f"Choosing ROI for {pair.data_entry.name} ...")
+        self.choose_roi_button.setEnabled(False)
+        self.load_button.setEnabled(False)
+        self.QtWidgets.QApplication.processEvents()
+        try:
+            selected_roi = select_roi_for_pair_interactive(
+                self.args,
+                pair,
+                initial_roi=initial_roi,
+                fallback_on_cancel=False,
+            )
+            if selected_roi is not None:
+                self.selected_rois_by_index[index] = selected_roi
+                self.status_label.setText("ROI selected; click Load Preview")
+            else:
+                self.status_label.setText("ROI selection canceled")
+        except Exception as exc:
+            self.status_label.setText(f"ROI failed: {type(exc).__name__}")
+            self.QtWidgets.QMessageBox.critical(
+                self.window,
+                "ROI selection failed",
+                f"{type(exc).__name__}: {exc}",
+            )
+        finally:
+            self.choose_roi_button.setEnabled(True)
+            self.load_button.setEnabled(True)
+
     def load_selected(self):
         index = int(self.combo.currentData())
         pair = self.pairs[index]
@@ -865,7 +1319,13 @@ class PreviewWindow:
         self.load_button.setEnabled(False)
         self.QtWidgets.QApplication.processEvents()
         try:
-            result = compute_preview(pair, self.args)
+            result = compute_preview(
+                pair,
+                self.args,
+                selected_roi_override=self.selected_rois_by_index.get(index),
+            )
+            if self.args.select_roi and result.selected_roi is not None:
+                self.selected_rois_by_index[index] = result.selected_roi
             self.tabs.clear()
             self.add_summary_tab(result=result)
             add_snapshot_tab(self.tabs, self.pg, result)
@@ -917,10 +1377,32 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--only-data", nargs="*", default=None)
     parser.add_argument("--bad-files", default=str(BAD_FILES_DEFAULT))
 
-    parser.add_argument("--roi-json", default=str(ROI_JSON_DEFAULT))
+    parser.add_argument(
+        "--roi-json",
+        default=str(ROI_JSON_DEFAULT),
+        help="Path for loading or saving an ROI JSON. Use 'none' to disable JSON paths.",
+    )
+    parser.add_argument(
+        "--use-saved-roi",
+        dest="use_saved_roi",
+        action="store_true",
+        help="Load --roi-json before row-range, auto-fit, or manual selection.",
+    )
     parser.add_argument("--no-saved-roi", dest="use_saved_roi", action="store_false")
-    parser.set_defaults(use_saved_roi=True)
+    parser.set_defaults(use_saved_roi=False)
     parser.add_argument("--row-range", nargs=2, type=int, default=None, metavar=("START", "STOP"))
+    parser.add_argument(
+        "--select-roi",
+        action="store_true",
+        default=False,
+        help="Open the PyQtGraph tilted-band selector before computing a preview.",
+    )
+    parser.add_argument(
+        "--save-selected-roi",
+        action="store_true",
+        default=False,
+        help="After --select-roi is accepted, save it to --roi-json automatically.",
+    )
     parser.add_argument("--use-tilted-roi", action="store_true", default=False)
     parser.add_argument("--tilted-roi-frame-average", type=positive_int, default=5)
     parser.add_argument("--tilted-roi-threshold-fraction", type=float, default=0.55)
